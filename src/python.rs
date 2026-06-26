@@ -106,9 +106,10 @@ impl PyASVExplainer {
             "approx" => self.inner.approximate(rust_fn, make_cfg()),
             "exact" => self.inner.exact(rust_fn),
             "exact_tree" => self.inner.exact_tree(rust_fn),
+            "exact_dag" => self.inner.exact_dag(rust_fn),
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown method '{method}': use 'auto', 'approx', 'exact', or 'exact_tree'"
+                    "unknown method '{method}': use 'auto', 'approx', 'exact', 'exact_tree', or 'exact_dag'"
                 )));
             }
         }

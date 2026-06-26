@@ -26,6 +26,7 @@
 
 mod approx;
 mod cache;
+mod dag_dp;
 mod error;
 mod graph;
 mod sampler;

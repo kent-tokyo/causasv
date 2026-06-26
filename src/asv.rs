@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::approx::approximate_asv;
 use crate::cache::value_cached;
+use crate::dag_dp::dag_exact_asv;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::SamplingConfig;
@@ -9,6 +10,7 @@ use crate::topo::enumerate_topos;
 use crate::tree::tree_exact_asv;
 
 /// Result of an ASV computation.
+#[derive(Debug)]
 pub struct AsvResult {
     /// Per-node ASV values in ascending NodeId order.
     pub values: BTreeMap<NodeId, f64>,
@@ -99,12 +101,25 @@ impl AsvExplainer {
         tree_exact_asv(&self.dag, value_fn)
     }
 
+    /// Exact ASV for any DAG via order-ideal DP. Practical for n ≤ 20.
+    ///
+    /// Computes `dp[mask]` = number of linear extensions with prefix `mask`,
+    /// then accumulates weighted marginal contributions. O(2^n × n) time.
+    pub fn exact_dag<F>(&self, value_fn: F) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        self.dag.validate()?;
+        dag_exact_asv(&self.dag, value_fn)
+    }
+
     /// Automatic method selection based on graph size and structure.
     ///
-    /// Dispatch rules (justified by benchmarks on n=7 balanced tree):
-    /// - n ≤ 8: `exact` — brute-force is fastest due to lower allocator overhead
-    /// - n > 8, rooted directed tree: `exact_tree` — DP avoids millions of enumerations
-    /// - otherwise: `approximate` — general DAG or large n
+    /// Dispatch rules:
+    /// - n ≤ 8: `exact` — brute-force, lowest overhead for small n
+    /// - n > 8, rooted directed tree: `exact_tree` — order-ideal DP
+    /// - 8 < n ≤ 20: `exact_dag` — order-ideal DP for general DAGs
+    /// - otherwise: `approximate` — IS-weighted sampling
     ///
     /// `config` is used only when the approximate path is taken.
     pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
@@ -117,6 +132,8 @@ impl AsvExplainer {
             self.exact(value_fn)
         } else if crate::tree::find_rooted_tree_root(&self.dag).is_ok() {
             self.exact_tree(value_fn)
+        } else if n <= 20 {
+            self.exact_dag(value_fn)
         } else {
             self.approximate(value_fn, config)
         }

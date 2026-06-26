@@ -209,7 +209,7 @@ fn test_auto_general_dag_uses_approx() {
             causasv::SamplingConfig::new(500).with_seed(0),
         )
         .unwrap();
-    // approx path: is_exact = false
-    assert!(!auto.is_exact);
-    assert!(auto.effective_sample_size.is_some());
+    // n=9 general DAG: auto now uses exact_dag (n ≤ 20 → exact DP)
+    assert!(auto.is_exact);
+    assert!(auto.effective_sample_size.is_none());
 }

@@ -102,8 +102,11 @@ print(info["is_exact"])  # False
 | Method | When to use | API |
 |--------|-------------|-----|
 | `exact` | Small DAGs (n ≤ ~8); enumerates all linear extensions | `explainer.exact(value_fn)` |
-| `exact_tree` | Rooted directed trees; validates tree structure | `explainer.exact_tree(value_fn)` |
-| `approx` | Any DAG size; importance-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
+| `exact_tree` | Rooted directed trees; order-ideal DP | `explainer.exact_tree(value_fn)` |
+| `exact_dag` | General DAGs, n ≤ 20; order-ideal DP | `explainer.exact_dag(value_fn)` |
+| `approx` | Any DAG (n > 20); importance-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
+
+`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag`; else → `approx`.
 
 The approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results.
 
@@ -111,19 +114,22 @@ The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_s
 
 ## Status
 
-Experimental — v0.4.0. Public API may change before v1.0.
+Experimental — v0.5.0. Public API may change before v1.0.
 
 ## Algorithm status
 
 | Method | Implementation | Notes |
 |--------|---------------|-------|
 | `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
-| `exact_tree` | Rooted tree validation + order-ideal DP | Efficient; avoids full linear extension enumeration |
-| `approx` | Self-normalized IS over topological orderings | Corrects frontier-sampler bias |
+| `exact_tree` | Rooted tree validation + order-ideal DP | Efficient for trees; hook-length formula |
+| `exact_dag` | Order-ideal DP over 2^n states | General DAGs, n ≤ 20; O(2^n × n) |
+| `approx` | Self-normalized IS over topological orderings | Any DAG; corrects frontier-sampler bias |
 
 The brute-force `exact` implementation is used as the reference oracle in tests for all other methods.
 
 The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each by the hook-length formula, avoiding explicit enumeration of all linear extensions. Caterpillar trees of depth 30 see orders-of-magnitude speedups over brute-force.
+
+The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (orderings of valid order ideals S) and `dp_ind[T]` (linear extensions of any induced subgraph G[T]). The ASV for each node i accumulates `dp_fwd[S] × dp_ind[V\(S∪{i})] × (v(S∪{i}) − v(S))` over all valid transitions. This is the order-ideal DP generalized from trees to arbitrary DAGs.
 
 ## Paper correspondence
 
@@ -133,12 +139,14 @@ The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each 
 |---------------------|---------|
 | ASV definition | ✅ `exact` (brute-force oracle) |
 | Rooted tree exact algorithm | ✅ `exact_tree` (order-ideal DP + hook-length formula) |
+| General DAG exact DP | ✅ `exact_dag` (order-ideal DP, n ≤ 20) |
 | Importance-sampling approximation for general DAGs | ✅ `approx` |
 | General DAG optimized DP | 🚧 planned |
 | Causal discovery | ❌ out of scope |
 
 - `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
-- `approx` implements importance-weighted topological ordering sampling for general DAGs.
+- `exact_dag` implements the two-table order-ideal DP for general DAGs (n ≤ 20).
+- `approx` implements importance-weighted topological ordering sampling for any DAG.
 - `exact` is a brute-force baseline oracle used as a correctness reference in tests.
 
 ## Performance
