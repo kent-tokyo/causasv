@@ -16,4 +16,6 @@ pub enum CausasvError {
     NotRootedTree,
     #[error("value function error: {0}")]
     ValueFunctionError(String),
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }

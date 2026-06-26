@@ -16,6 +16,11 @@ pub(crate) fn approximate_asv<F>(
 where
     F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
 {
+    if config.n_samples == 0 {
+        return Err(CausasvError::InvalidConfig(
+            "n_samples must be > 0".to_string(),
+        ));
+    }
     let n = dag.node_count();
     let seed = config.seed;
     let mut rng = make_rng(seed);

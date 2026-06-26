@@ -1,5 +1,7 @@
 # causasv
 
+[![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
+
 Fast causal Asymmetric Shapley Values for Rust and Python.
 
 `causasv` is a Rust-first engine for computing Asymmetric Shapley Values over user-supplied causal DAGs. It is designed for explainable AI workflows where feature attribution should respect known causal structure.
@@ -94,6 +96,20 @@ The Python `value_fn` receives a sorted list of feature names present in the coa
 | `approx` | Any DAG size; importance-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
 The approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results.
+
+## Status
+
+Experimental — v0.1.0. Public API may change before v1.0.
+
+## Algorithm status
+
+| Method | Implementation | Notes |
+|--------|---------------|-------|
+| `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
+| `exact_tree` | Validates rooted tree, then enumerates | Efficient tree DP planned for v0.2.0 |
+| `approx` | Self-normalized IS over topological orderings | Corrects frontier-sampler bias |
+
+The brute-force `exact` implementation is used as the reference oracle in tests for all other methods.
 
 ## Current limitations
 

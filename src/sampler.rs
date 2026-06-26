@@ -59,3 +59,76 @@ pub(crate) fn make_rng(seed: Option<u64>) -> ChaCha8Rng {
         None => ChaCha8Rng::from_entropy(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::Dag;
+
+    fn chain_2() -> Dag {
+        let mut dag = Dag::new();
+        let a = dag.add_node("a");
+        let b = dag.add_node("b");
+        dag.add_edge(a, b).unwrap();
+        dag
+    }
+
+    /// Chain a→b: each step has exactly one frontier node → log_q = -ln(1) - ln(1) = 0.
+    #[test]
+    fn test_chain_log_q_is_zero() {
+        let dag = chain_2();
+        let s = sample_one(&dag, &mut make_rng(Some(0)));
+        assert!((s.log_q - 0.0).abs() < 1e-12);
+    }
+
+    /// Two independent nodes: first pick from {a,b} (prob 0.5), second forced → log_q = -ln(2).
+    #[test]
+    fn test_two_independent_log_q() {
+        let mut dag = Dag::new();
+        dag.add_node("a");
+        dag.add_node("b");
+        let s = sample_one(&dag, &mut make_rng(Some(0)));
+        let expected = -(2.0f64.ln());
+        assert!((s.log_q - expected).abs() < 1e-12);
+    }
+
+    /// For a chain, every sample must have the parent before its child.
+    #[test]
+    fn test_chain_ordering_always_valid() {
+        let dag = chain_2();
+        let mut rng = make_rng(Some(1));
+        for _ in 0..200 {
+            let s = sample_one(&dag, &mut rng);
+            assert_eq!(s.ordering.len(), 2);
+            let pos: Vec<usize> = s.ordering.iter().map(|id| id.0 as usize).collect();
+            assert_eq!(pos[0], 0, "a (NodeId 0) must come first in chain");
+        }
+    }
+
+    /// Every sample must contain all n nodes exactly once.
+    #[test]
+    fn test_no_missing_no_duplicate_nodes() {
+        let mut dag = Dag::new();
+        for i in 0..5usize {
+            dag.add_node(&format!("n{i}"));
+        }
+        let mut rng = make_rng(Some(2));
+        for _ in 0..100 {
+            let s = sample_one(&dag, &mut rng);
+            let mut sorted = s.ordering.clone();
+            sorted.sort_unstable();
+            let expected: Vec<NodeId> = (0..5).map(|i| NodeId(i as u32)).collect();
+            assert_eq!(sorted, expected);
+        }
+    }
+
+    /// Same seed must produce identical ordering and log_q.
+    #[test]
+    fn test_same_seed_same_result() {
+        let dag = chain_2();
+        let s1 = sample_one(&dag, &mut make_rng(Some(42)));
+        let s2 = sample_one(&dag, &mut make_rng(Some(42)));
+        assert_eq!(s1.ordering, s2.ordering);
+        assert_eq!(s1.log_q, s2.log_q);
+    }
+}

@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+title: causasv
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - name: causasv contributors
+version: 0.1.0
+url: "https://github.com/kent-tokyo/causasv"
+license: "MIT OR Apache-2.0"
+references:
+  - type: article
+    title: "Beyond Shapley: Efficient Computation of Asymmetric Shapley Values"
+    notes: "The paper that inspired this library"
