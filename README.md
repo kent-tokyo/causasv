@@ -5,6 +5,8 @@
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
 [![GitHub release](https://img.shields.io/github/v/release/kent-tokyo/causasv)](https://github.com/kent-tokyo/causasv/releases)
 
+**English** | [日本語](README_ja.md)
+
 Fast causal Asymmetric Shapley Values for Rust and Python.
 
 `causasv` is a Rust-first engine for computing Asymmetric Shapley Values over user-supplied causal DAGs. It is designed for explainable AI workflows where feature attribution should respect known causal structure.

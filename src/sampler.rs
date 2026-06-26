@@ -35,11 +35,13 @@ pub(crate) fn sample_one(dag: &Dag, rng: &mut ChaCha8Rng) -> SampledOrdering {
     let n = dag.node_count();
     let mut in_deg = dag.in_degrees();
     let mut ordering = Vec::with_capacity(n);
+    let mut frontier = Vec::with_capacity(n);
     let mut log_q = 0.0f64;
 
     for _ in 0..n {
         // Frontier: nodes with in_deg == 0 (placed nodes have in_deg = MAX)
-        let frontier: Vec<usize> = (0..n).filter(|&i| in_deg[i] == 0).collect();
+        frontier.clear();
+        frontier.extend((0..n).filter(|&i| in_deg[i] == 0));
         log_q -= (frontier.len() as f64).ln();
         let idx = rng.gen_range(0..frontier.len());
         let node = NodeId(frontier[idx] as u32);

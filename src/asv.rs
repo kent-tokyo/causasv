@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::approx::approximate_asv;
+use crate::cache::value_cached;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::SamplingConfig;
@@ -40,24 +41,25 @@ impl AsvExplainer {
         F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
     {
         self.dag.validate()?;
+        let n = self.dag.node_count();
+        if n > 64 {
+            return Err(CausasvError::InvalidConfig(format!(
+                "bitmask coalitions require n ≤ 64, got {n}"
+            )));
+        }
         let orderings = enumerate_topos(&self.dag)?;
         let n_orderings = orderings.len();
-        let n = self.dag.node_count();
         let mut phi = vec![0.0f64; n];
-        let mut coalition = Vec::with_capacity(n);
+        let mut cache = HashMap::<u64, f64>::new();
 
         for ordering in &orderings {
-            for (k, &node) in ordering.iter().enumerate() {
-                coalition.clear();
-                coalition.extend_from_slice(&ordering[..k]);
-                coalition.sort_unstable();
-                let v_without = value_fn(&coalition)?;
-
-                coalition.push(node);
-                coalition.sort_unstable();
-                let v_with = value_fn(&coalition)?;
-
-                phi[node.0 as usize] += v_with - v_without;
+            let mut prefix_mask: u64 = 0;
+            for &node in ordering {
+                let without = prefix_mask;
+                let with_node = prefix_mask | (1u64 << node.0);
+                phi[node.0 as usize] += value_cached(&mut cache, &value_fn, with_node)?
+                    - value_cached(&mut cache, &value_fn, without)?;
+                prefix_mask = with_node;
             }
         }
 
@@ -81,7 +83,7 @@ impl AsvExplainer {
         config: SamplingConfig,
     ) -> Result<AsvResult, CausasvError>
     where
-        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError> + Send + Sync,
     {
         self.dag.validate()?;
         approximate_asv(&self.dag, value_fn, config)
@@ -107,7 +109,7 @@ impl AsvExplainer {
     /// `config` is used only when the approximate path is taken.
     pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
     where
-        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError> + Send + Sync,
     {
         self.dag.validate()?;
         let n = self.dag.node_count();

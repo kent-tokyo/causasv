@@ -1,4 +1,31 @@
+//! Fast Causal Asymmetric Shapley Values for DAGs.
+//!
+//! # Quick Start
+//!
+//! ```rust
+//! use causasv::{AsvExplainer, CausasvError, Dag};
+//!
+//! fn main() -> Result<(), CausasvError> {
+//!     let mut dag = Dag::new();
+//!     let x = dag.add_node("X");
+//!     let y = dag.add_node("Y");
+//!     dag.add_edge(x, y)?;
+//!
+//!     let explainer = AsvExplainer::new(dag);
+//!     let result = explainer.exact(|coalition| Ok(coalition.len() as f64))?;
+//!
+//!     for (id, val) in &result.values {
+//!         println!("{id:?} = {val:.4}");
+//!     }
+//!     Ok(())
+//! }
+//! ```
+//!
+//! For large graphs use [`AsvExplainer::approximate`] or [`AsvExplainer::auto`].
+//! See the [README](https://github.com/kent-tokyo/causasv) for Python usage and benchmarks.
+
 mod approx;
+mod cache;
 mod error;
 mod graph;
 mod sampler;

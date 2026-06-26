@@ -110,15 +110,20 @@ impl PyASVExplainer {
         seed: Option<u64>,
     ) -> PyResult<HashMap<String, f64>> {
         let names = &self.names;
-        let rust_fn = |coalition: &[NodeId]| -> Result<f64, CausasvError> {
-            let name_list: Vec<&str> = coalition
-                .iter()
-                .map(|id| names[id.0 as usize].as_str())
-                .collect();
-            value_fn
-                .call1(py, (name_list,))
-                .and_then(|r| r.extract::<f64>(py))
-                .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+        // `move` + `Python::with_gil` makes the closure Send + Sync (required for parallel approx).
+        // GIL is re-acquired per call; threads serialize on it, so Python users see no speedup
+        // but the code stays correct.
+        let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
+            Python::with_gil(|py| {
+                let name_list: Vec<&str> = coalition
+                    .iter()
+                    .map(|id| names[id.0 as usize].as_str())
+                    .collect();
+                value_fn
+                    .call1(py, (name_list,))
+                    .and_then(|r| r.extract::<f64>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
         };
 
         let make_cfg = || {

@@ -1,6 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::asv::AsvResult;
+use crate::cache::{value_cached, vec_to_mask};
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 
@@ -171,6 +172,11 @@ where
     let sizes = subtree_sizes(dag, root);
 
     let n = dag.node_count();
+    if n > 64 {
+        return Err(CausasvError::InvalidConfig(format!(
+            "bitmask coalitions require n ≤ 64, got {n}"
+        )));
+    }
     let mut log_fact = vec![0.0f64; n + 1];
     for k in 1..=n {
         log_fact[k] = log_fact[k - 1] + (k as f64).ln();
@@ -178,6 +184,7 @@ where
     let log_s: Vec<f64> = sizes.iter().map(|&s| (s as f64).ln()).collect();
 
     let mut phi = vec![0.0f64; n];
+    let mut cache = HashMap::<u64, f64>::new();
 
     for i in dag.all_nodes() {
         let anc = ancestors_of(dag, i, root);
@@ -213,7 +220,11 @@ where
             let sum_log_si: f64 = s_plus_i.iter().map(|&v| log_s[v.0 as usize]).sum();
             let w = (log_ls + log_fact[n_comp] + sum_log_si - log_fact[n]).exp();
 
-            phi[i.0 as usize] += w * (value_fn(&s_plus_i)? - value_fn(&s_vec)?);
+            let s_mask = vec_to_mask(&s_vec);
+            let si_mask = s_mask | (1u64 << i.0);
+            phi[i.0 as usize] +=
+                w * (value_cached(&mut cache, &value_fn, si_mask)?
+                    - value_cached(&mut cache, &value_fn, s_mask)?);
         }
     }
 

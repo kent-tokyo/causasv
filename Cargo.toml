@@ -6,14 +6,23 @@ description = "Fast causal Asymmetric Shapley Values for Rust and Python"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kent-tokyo/causasv"
 homepage = "https://github.com/kent-tokyo/causasv"
+readme = "README.md"
+documentation = "https://docs.rs/causasv"
 keywords = ["shapley", "causal", "xai", "dag", "explainability"]
 categories = ["science", "mathematics", "algorithms"]
+
+[package.metadata.docs.rs]
+# Exclude the python feature: PyO3 with extension-module requires a Python
+# interpreter at link time, which docs.rs does not provide.
+features = []
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 thiserror = "1"
 rand = "0.8"
 rand_chacha = "0.3"
 indexmap = "2"
+rayon = "1"
 
 [dependencies.pyo3]
 version = "0.23"
