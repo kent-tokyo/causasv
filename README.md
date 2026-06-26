@@ -93,17 +93,48 @@ values = explainer.explain(
 
 The Python `value_fn` receives a sorted list of feature names present in the coalition and must return a float.
 
-For approximate methods, use `explain_with_diagnostics()` to inspect the Effective Sample Size (ESS):
+Use `explain_with_diagnostics()` to get ESS, seed, and method alongside values:
 
 ```python
 info = explainer.explain_with_diagnostics(
     value_fn=lambda feature_names: my_model_score(feature_names),
     method="approx",
     n_samples=10_000,
+    seed=42,
 )
-print(info["values"])    # dict[str, float]
-print(info["ess"])       # float — ESS ≈ n_samples means reliable; ESS ≪ n_samples means high variance
-print(info["is_exact"])  # False
+print(info["values"])     # dict[str, float]
+print(info["ess"])        # float — ESS ≈ n_samples means reliable; ESS ≪ n_samples means high variance
+print(info["ess_ratio"])  # float — ESS / n_samples ∈ (0, 1]; close to 1 is good
+print(info["n_samples"])  # int
+print(info["seed"])       # int | None
+print(info["is_exact"])   # bool
+print(info["method"])     # str — the method name passed in (e.g. "approx")
+```
+
+Inspect and export the DAG:
+
+```python
+dag.nodes()   # ["education", "income", "risk_score"]
+dag.edges()   # [("education", "income"), ("income", "risk_score")]
+dag.to_dot()  # 'digraph {\n  education -> income;\n  income -> risk_score;\n}'
+
+# Convert to networkx (networkx must be installed separately)
+import networkx as nx
+G = nx.DiGraph(dag.edges())
+```
+
+Wrap a sklearn model as a value function with `make_tabular_value_fn` (requires numpy):
+
+```python
+from causasv import make_tabular_value_fn
+
+value_fn = make_tabular_value_fn(
+    model=my_classifier,      # any sklearn-compatible model
+    x=X_test[0],             # instance to explain, shape (n_features,)
+    background=X_train,      # reference dataset; column means = absent-feature baseline
+    feature_names=["education", "income", "risk_score"],
+)
+values = explainer.explain(value_fn, method="auto")
 ```
 
 ## Exact vs Approximate
@@ -149,8 +180,8 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | General DAG exact DP (n ≤ 20) | ✅ | ✅ | Experimental |
 | Approximate ASV with ESS | ✅ | ✅ | Experimental |
 | Adaptive approximation | 🚧 | 🚧 | Planned (v0.6) |
-| sklearn / NumPy helper | ❌ | 🚧 | Planned (v0.7) |
-| Graph export (DOT / networkx) | 🚧 | 🚧 | Planned (v0.7) |
+| sklearn / NumPy helper | ❌ | ✅ | Experimental |
+| Graph export (DOT / networkx) | 🚧 | ✅ | Experimental |
 
 ## Paper correspondence
 
@@ -194,7 +225,7 @@ Run with `cargo bench` to reproduce.
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
 - `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs, use `exact` (small n) or `approx`.
-- Python bindings are minimal; NumPy integration and richer ergonomics are planned.
+- Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
 - No built-in causal discovery, model training, or automatic graph construction.
 
 ## Compared to other tools

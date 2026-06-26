@@ -52,6 +52,48 @@ impl PyCausalDAG {
         Ok(Self { inner })
     }
 
+    /// Return all node names in insertion order.
+    fn nodes(&self) -> Vec<String> {
+        self.inner
+            .all_nodes()
+            .map(|id| self.inner.node_name(id).unwrap().to_string())
+            .collect()
+    }
+
+    /// Return all edges as (from, to) name pairs.
+    fn edges(&self) -> Vec<(String, String)> {
+        self.inner
+            .all_nodes()
+            .flat_map(|from_id| {
+                let from = self.inner.node_name(from_id).unwrap().to_string();
+                self.inner
+                    .children_raw(from_id)
+                    .iter()
+                    .map(move |&to_id| {
+                        (
+                            from.clone(),
+                            self.inner.node_name(to_id).unwrap().to_string(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Return a Graphviz DOT representation of the DAG.
+    fn to_dot(&self) -> String {
+        let mut s = String::from("digraph {\n");
+        for from_id in self.inner.all_nodes() {
+            let from = self.inner.node_name(from_id).unwrap();
+            for &to_id in self.inner.children_raw(from_id) {
+                let to = self.inner.node_name(to_id).unwrap();
+                s.push_str(&format!("  {from} -> {to};\n"));
+            }
+        }
+        s.push('}');
+        s
+    }
+
     /// Add a directed edge. Nodes are created automatically if they do not exist.
     fn add_edge(&mut self, from_name: &str, to_name: &str) -> PyResult<()> {
         let from = self.inner.add_node(from_name);
@@ -176,11 +218,17 @@ impl PyASVExplainer {
         seed: Option<u64>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let result = self.run(value_fn, method, n_samples, seed)?;
+        let ess_ratio = result
+            .effective_sample_size
+            .map(|e| e / result.n_samples as f64);
         let d = PyDict::new(py);
         d.set_item("values", self.values_map(&result))?;
         d.set_item("ess", result.effective_sample_size)?;
+        d.set_item("ess_ratio", ess_ratio)?;
         d.set_item("n_samples", result.n_samples)?;
+        d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
+        d.set_item("method", method)?;
         Ok(d)
     }
 }
