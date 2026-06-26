@@ -1,4 +1,4 @@
-# causasv
+# causasv — Causal Feature Attribution via Asymmetric Shapley Values
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
@@ -7,18 +7,7 @@
 
 **English** | [日本語](README_ja.md)
 
-Fast causal Asymmetric Shapley Values for Rust and Python.
-
-`causasv` is a Rust-first engine for computing Asymmetric Shapley Values over user-supplied causal DAGs. It is designed for explainable AI workflows where feature attribution should respect known causal structure.
-
-This crate does not learn causal graphs. It assumes that the user provides a valid directed acyclic graph and a value function.
-
-## What it is NOT
-
-- Not a causal discovery tool — provide your own DAG
-- Not a generic SHAP replacement — computes ASV, not SHAP
-- Not a model trainer or feature selector
-- Not a deep learning explainability framework
+`causasv` computes **Asymmetric Shapley Values (ASV)** for causal feature attribution over user-supplied DAGs. It is a Rust-first engine with Python bindings, designed for XAI workflows where feature importance should respect known causal structure.
 
 ## What is ASV?
 
@@ -109,7 +98,7 @@ The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_s
 
 ## Status
 
-Experimental — v0.3.0. Public API may change before v1.0.
+Experimental — v0.4.0. Public API may change before v1.0.
 
 ## Algorithm status
 
@@ -184,6 +173,12 @@ It solves one narrow problem:
 The main differences from `shapr` and `shapflex`: `causasv` is a Rust-first engine
 that requires the user to supply an explicit causal DAG and a value function.
 It does not perform causal discovery and does not depend on the data distribution.
+
+## Scope
+
+- **Does** compute ASV (causal feature attribution) given a DAG and a value function
+- **Does not** do causal discovery, model training, or feature selection
+- **Not** a SHAP replacement — ASV and SHAP answer different questions
 
 ## Building Python bindings
 

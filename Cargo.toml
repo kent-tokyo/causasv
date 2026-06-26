@@ -2,14 +2,14 @@
 name = "causasv"
 version = "0.4.0"
 edition = "2021"
-description = "Fast causal Asymmetric Shapley Values for Rust and Python"
+description = "Causal feature attribution via Asymmetric Shapley Values (ASV) over DAGs — Rust + Python"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kent-tokyo/causasv"
 homepage = "https://github.com/kent-tokyo/causasv"
 readme = "README.md"
 documentation = "https://docs.rs/causasv"
-keywords = ["shapley", "causal", "xai", "dag", "explainability"]
-categories = ["science", "mathematics", "algorithms"]
+keywords = ["shapley", "causal", "shap", "feature-importance", "explainability"]
+categories = ["science", "algorithms"]
 
 [package.metadata.docs.rs]
 # Exclude the python feature: PyO3 with extension-module requires a Python
