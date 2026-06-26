@@ -152,7 +152,7 @@ values = explainer.explain(value_fn, method="auto")
 
 ## 状态
 
-实验性 — v0.5.0。在 v1.0 之前公共 API 可能会发生变化。
+实验性 — v0.6.0。在 v1.0 之前公共 API 可能会发生变化。
 
 ## 算法状态
 

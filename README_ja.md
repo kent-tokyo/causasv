@@ -165,7 +165,7 @@ values = explainer.explain(value_fn, method="auto")
 
 ## ステータス
 
-実験的 — v0.5.0。v1.0 以前に公開 API が変更される可能性があります。
+実験的 — v0.6.0。v1.0 以前に公開 API が変更される可能性があります。
 
 ## アルゴリズムの状況
 
