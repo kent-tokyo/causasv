@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[project]
+name = "causasv"
+version = "0.1.0"
+requires-python = ">=3.9"
+classifiers = ["Programming Language :: Python :: 3"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.maturin]
+features = ["python"]
+manifest-path = "../Cargo.toml"
+python-source = "."

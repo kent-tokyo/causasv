@@ -1,0 +1,28 @@
+[package]
+name = "causasv"
+version = "0.1.0"
+edition = "2021"
+description = "Fast causal Asymmetric Shapley Values for Rust and Python"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+thiserror = "1"
+rand = "0.8"
+rand_chacha = "0.3"
+indexmap = "2"
+
+[dependencies.pyo3]
+version = "0.23"
+optional = true
+features = ["extension-module"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[[bench]]
+name = "asv_bench"
+harness = false
