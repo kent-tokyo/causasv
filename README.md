@@ -1,6 +1,9 @@
 # causasv
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
+[![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
+[![GitHub release](https://img.shields.io/github/v/release/kent-tokyo/causasv)](https://github.com/kent-tokyo/causasv/releases)
 
 Fast causal Asymmetric Shapley Values for Rust and Python.
 
