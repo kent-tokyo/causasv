@@ -100,3 +100,29 @@ def test_result_keys_are_node_names():
     explainer = ASVExplainer(dag)
     values = explainer.explain(lambda n: float(len(n)), method="exact")
     assert set(values.keys()) == {"education", "income", "risk_score"}
+
+
+def test_from_edges():
+    dag = CausalDAG.from_edges([
+        ("education", "income"),
+        ("income", "risk_score"),
+    ])
+    explainer = ASVExplainer(dag)
+    values = explainer.explain(lambda n: float(len(n)), method="exact")
+    assert set(values.keys()) == {"education", "income", "risk_score"}
+
+
+def test_from_edges_same_result_as_add_edge():
+    dag1 = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    dag2 = CausalDAG()
+    dag2.add_edge("a", "b")
+    dag2.add_edge("b", "c")
+    v1 = ASVExplainer(dag1).explain(lambda n: float(len(n)), method="exact")
+    v2 = ASVExplainer(dag2).explain(lambda n: float(len(n)), method="exact")
+    assert v1 == v2
+
+
+def test_from_edges_cycle_raises():
+    with pytest.raises(ValueError, match="cycle"):
+        dag = CausalDAG.from_edges([("a", "b"), ("b", "a")])
+        ASVExplainer(dag)

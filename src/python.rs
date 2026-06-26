@@ -22,6 +22,19 @@ impl PyCausalDAG {
         }
     }
 
+    /// Construct a DAG from a list of (from, to) edge tuples.
+    /// Nodes are created automatically.
+    #[staticmethod]
+    fn from_edges(edges: Vec<(String, String)>) -> PyResult<Self> {
+        let mut inner = RustDag::new();
+        for (from, to) in &edges {
+            let from_id = inner.add_node(from);
+            let to_id = inner.add_node(to);
+            inner.add_edge(from_id, to_id).map_err(py_err)?;
+        }
+        Ok(Self { inner })
+    }
+
     /// Add a directed edge. Nodes are created automatically if they do not exist.
     fn add_edge(&mut self, from_name: &str, to_name: &str) -> PyResult<()> {
         let from = self.inner.add_node(from_name);

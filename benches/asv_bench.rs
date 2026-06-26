@@ -29,7 +29,27 @@ fn make_balanced_tree(depth: usize) -> Dag {
     dag
 }
 
-fn bench_exact_chain(c: &mut Criterion) {
+fn make_caterpillar(chain_len: usize) -> Dag {
+    // chain_len main nodes + one leaf per main node
+    let mut dag = Dag::new();
+    let ns: Vec<_> = (0..chain_len)
+        .map(|i| dag.add_node(&format!("n{i}")))
+        .collect();
+    let ls: Vec<_> = (0..chain_len)
+        .map(|i| dag.add_node(&format!("l{i}")))
+        .collect();
+    for i in 0..chain_len - 1 {
+        dag.add_edge(ns[i], ns[i + 1]).unwrap();
+    }
+    for i in 0..chain_len {
+        dag.add_edge(ns[i], ls[i]).unwrap();
+    }
+    dag
+}
+
+// ── exact (brute-force) ──────────────────────────────────────────────────────
+
+fn bench_exact_chain_7(c: &mut Criterion) {
     let dag = make_chain(7);
     let explainer = AsvExplainer::new(dag);
     c.bench_function("exact_chain_7", |b| {
@@ -37,7 +57,59 @@ fn bench_exact_chain(c: &mut Criterion) {
     });
 }
 
-fn bench_approx_chain(c: &mut Criterion) {
+fn bench_exact_balanced_tree_7(c: &mut Criterion) {
+    // n=7 balanced binary tree: L(T) = 80 linear extensions
+    let dag = make_balanced_tree(2);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_balanced_tree_7_bruteforce", |b| {
+        b.iter(|| explainer.exact(|s| Ok(black_box(s.len() as f64))).unwrap());
+    });
+}
+
+// ── exact_tree (order-ideal DP) ──────────────────────────────────────────────
+
+fn bench_tree_dp_balanced_7(c: &mut Criterion) {
+    // same n=7 tree via order-ideal DP
+    let dag = make_balanced_tree(2);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_tree_balanced_7_dp", |b| {
+        b.iter(|| {
+            explainer
+                .exact_tree(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+fn bench_tree_dp_balanced_15(c: &mut Criterion) {
+    // n=15 balanced binary tree: L(T) ≈ 22M — brute-force is slow, DP is fast
+    let dag = make_balanced_tree(3);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_tree_balanced_15_dp", |b| {
+        b.iter(|| {
+            explainer
+                .exact_tree(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+fn bench_tree_dp_caterpillar_10(c: &mut Criterion) {
+    // n=10 caterpillar: L(T) = 945, DP has ~6x fewer pre-sets
+    let dag = make_caterpillar(5);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_tree_caterpillar_10_dp", |b| {
+        b.iter(|| {
+            explainer
+                .exact_tree(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+// ── approximate ─────────────────────────────────────────────────────────────
+
+fn bench_approx_chain_10(c: &mut Criterion) {
     let dag = make_chain(10);
     let explainer = AsvExplainer::new(dag);
     c.bench_function("approx_chain_10_1k", |b| {
@@ -55,7 +127,7 @@ fn bench_approx_chain(c: &mut Criterion) {
 fn bench_approx_tree(c: &mut Criterion) {
     let dag = make_balanced_tree(3); // 15 nodes
     let explainer = AsvExplainer::new(dag);
-    c.bench_function("approx_balanced_tree_depth3_1k", |b| {
+    c.bench_function("approx_balanced_tree_15_1k", |b| {
         b.iter(|| {
             explainer
                 .approximate(
@@ -69,8 +141,12 @@ fn bench_approx_tree(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_exact_chain,
-    bench_approx_chain,
-    bench_approx_tree
+    bench_exact_chain_7,
+    bench_exact_balanced_tree_7,
+    bench_tree_dp_balanced_7,
+    bench_tree_dp_balanced_15,
+    bench_tree_dp_caterpillar_10,
+    bench_approx_chain_10,
+    bench_approx_tree,
 );
 criterion_main!(benches);

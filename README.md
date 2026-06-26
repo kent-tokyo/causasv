@@ -122,6 +122,25 @@ The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each 
 - Python bindings are minimal; NumPy integration and richer ergonomics are planned.
 - No built-in causal discovery, model training, or automatic graph construction.
 
+## Compared to other tools
+
+`causasv` is not a SHAP replacement or a general-purpose explainability framework.
+It solves one narrow problem:
+
+> Computing Asymmetric Shapley Values over a user-supplied causal DAG.
+
+| Tool | Focus | ASV / causal DAG |
+|------|-------|-----------------|
+| [SHAP](https://github.com/shap/shap) | General-purpose Shapley / SHAP | No — standard Shapley only |
+| [Captum](https://captum.ai/) | PyTorch model interpretability | No |
+| [shapr](https://github.com/NorskRegnesentral/shapr) | Conditional / causal Shapley (R + Python) | Yes — broader scope, R-first |
+| [shapflex](https://pypi.org/project/shapflex/) | ASV with causal knowledge (Python alpha) | Yes — similar concept |
+| **causasv** | ASV over user-supplied causal DAGs | **Core focus** |
+
+The main differences from `shapr` and `shapflex`: `causasv` is a Rust-first engine
+that requires the user to supply an explicit causal DAG and a value function.
+It does not perform causal discovery and does not depend on the data distribution.
+
 ## Building Python bindings
 
 ```bash
