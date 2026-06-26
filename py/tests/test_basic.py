@@ -126,3 +126,17 @@ def test_from_edges_cycle_raises():
     with pytest.raises(ValueError, match="cycle"):
         dag = CausalDAG.from_edges([("a", "b"), ("b", "a")])
         ASVExplainer(dag)
+
+
+def test_from_networkx():
+    nx = pytest.importorskip("networkx")
+    G = nx.DiGraph()
+    G.add_edge("a", "b")
+    G.add_edge("b", "c")
+    dag = CausalDAG.from_networkx(G)
+    values = ASVExplainer(dag).explain(lambda n: float(len(n)), method="exact")
+    assert set(values.keys()) == {"a", "b", "c"}
+    # Additive v(S)=|S|: only one ordering [a,b,c], all marginals = 1
+    assert abs(values["a"] - 1.0) < 1e-9
+    assert abs(values["b"] - 1.0) < 1e-9
+    assert abs(values["c"] - 1.0) < 1e-9

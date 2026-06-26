@@ -17,6 +17,10 @@ pub struct AsvResult {
     pub seed: Option<u64>,
     /// True if exact (brute-force or tree-exact), false if approximate.
     pub is_exact: bool,
+    /// Effective Sample Size for approximate methods: ESS = (Σw)² / Σw².
+    /// ESS ≈ n_samples → uniform IS weights (reliable). ESS ≪ n_samples → high variance.
+    /// None for exact methods.
+    pub effective_sample_size: Option<f64>,
 }
 
 /// Entry point for ASV computation over a causal DAG.
@@ -65,6 +69,7 @@ impl AsvExplainer {
             n_samples: n_orderings,
             seed: None,
             is_exact: true,
+            effective_sample_size: None,
         })
     }
 

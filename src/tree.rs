@@ -223,5 +223,6 @@ where
         n_samples: 0,
         seed: None,
         is_exact: true,
+        effective_sample_size: None,
     })
 }

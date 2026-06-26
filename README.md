@@ -73,9 +73,12 @@ fn main() -> Result<(), causasv::CausasvError> {
 ```python
 from causasv import CausalDAG, ASVExplainer
 
-dag = CausalDAG()
-dag.add_edge("education", "income")
-dag.add_edge("income", "risk_score")
+# From a list of edges
+dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
+
+# Or from a networkx DiGraph
+# import networkx as nx; G = nx.DiGraph(); G.add_edge(...)
+# dag = CausalDAG.from_networkx(G)
 
 explainer = ASVExplainer(dag)
 
@@ -99,6 +102,8 @@ The Python `value_fn` receives a sorted list of feature names present in the coa
 | `approx` | Any DAG size; importance-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
 The approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results.
+
+The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_samples means IS weights are uniform and the estimate is reliable; ESS ≪ n_samples indicates high weight variance.
 
 ## Status
 

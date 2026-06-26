@@ -26,12 +26,14 @@ where
     let mut rng = make_rng(seed);
     let mut numerator = vec![0.0f64; n];
     let mut denominator = 0.0f64;
+    let mut sum_w_sq = 0.0f64;
     let mut coalition = Vec::with_capacity(n);
 
     for _ in 0..config.n_samples {
         let sample = sample_one(dag, &mut rng);
         let w = (-sample.log_q).exp(); // IS weight = 1/q(π)
         denominator += w;
+        sum_w_sq += w * w;
 
         for (k, &node) in sample.ordering.iter().enumerate() {
             coalition.clear();
@@ -51,10 +53,14 @@ where
         .map(|i| (NodeId(i as u32), numerator[i] / denominator))
         .collect();
 
+    // ESS = (Σw)² / Σw²: estimates effective number of samples given IS weight variance.
+    let ess = denominator * denominator / sum_w_sq;
+
     Ok(AsvResult {
         values,
         n_samples: config.n_samples,
         seed,
         is_exact: false,
+        effective_sample_size: Some(ess),
     })
 }

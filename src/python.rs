@@ -22,6 +22,22 @@ impl PyCausalDAG {
         }
     }
 
+    /// Construct a DAG from any graph object that has an `edges()` method returning
+    /// (from, to) pairs — compatible with networkx DiGraph and similar libraries.
+    #[staticmethod]
+    fn from_networkx(g: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut inner = RustDag::new();
+        for edge in g.call_method0("edges")?.try_iter()? {
+            let edge = edge?;
+            let from: String = edge.get_item(0)?.extract()?;
+            let to: String = edge.get_item(1)?.extract()?;
+            let from_id = inner.add_node(&from);
+            let to_id = inner.add_node(&to);
+            inner.add_edge(from_id, to_id).map_err(py_err)?;
+        }
+        Ok(Self { inner })
+    }
+
     /// Construct a DAG from a list of (from, to) edge tuples.
     /// Nodes are created automatically.
     #[staticmethod]
