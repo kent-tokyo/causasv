@@ -121,6 +121,28 @@ The brute-force `exact` implementation is used as the reference oracle in tests 
 
 The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each by the hook-length formula, avoiding explicit enumeration of all linear extensions. Caterpillar trees of depth 30 see orders-of-magnitude speedups over brute-force.
 
+**Paper alignment** — *Beyond Shapley: Efficient Computation of Asymmetric Shapley Values*:
+- `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
+- `approx` implements importance-weighted topological ordering sampling for general DAGs.
+- `exact` is a brute-force baseline oracle; not from the paper.
+
+## Performance
+
+Benchmarks on Apple M-series (arm64, release build). `v(S) = |S|` (additive value function).
+
+| Benchmark | n | L(T) | Method | Time |
+|-----------|---|-------|--------|------|
+| Balanced binary tree | 7 | 80 | `exact` (enumerate) | ~70 µs |
+| Balanced binary tree | 7 | 80 | `exact_tree` (DP) | ~145 µs |
+| Balanced binary tree | 15 | ~22 M | `exact` | — (infeasible) |
+| Balanced binary tree | 15 | ~22 M | `exact_tree` (DP) | ~7.8 ms |
+| Caterpillar tree | 10 | 945 | `exact_tree` (DP) | ~347 µs |
+| Approximate (chain) | 10 | — | `approx` (1k samples) | ~2.9 ms |
+
+Note: for n ≤ ~8, `exact` is often faster than `exact_tree` due to lower allocator overhead.
+`exact_tree` becomes the only feasible exact method for larger trees.
+Run with `cargo bench` to reproduce.
+
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
