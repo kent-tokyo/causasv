@@ -1,6 +1,8 @@
 # causasv — Causal Feature Attribution via Asymmetric Shapley Values
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/kent-tokyo/causasv/actions/workflows/codeql.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/codeql.yml)
+[![Security](https://github.com/kent-tokyo/causasv/actions/workflows/security.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/security.yml)
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
 [![GitHub release](https://img.shields.io/github/v/release/kent-tokyo/causasv)](https://github.com/kent-tokyo/causasv/releases)

@@ -1,0 +1,39 @@
+name: CodeQL
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "31 3 * * 1"
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+jobs:
+  analyze-rust:
+    name: CodeQL (rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          build-mode: none
+          queries: security-extended,security-and-quality
+      - uses: github/codeql-action/analyze@v3
+
+  analyze-python:
+    name: CodeQL (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          build-mode: none
+          queries: security-extended,security-and-quality
+      - uses: github/codeql-action/analyze@v3

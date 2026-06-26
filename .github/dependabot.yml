@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "rust"]
+    commit-message:
+      prefix: "deps(rust)"
+
+  - package-ecosystem: "pip"
+    directory: "/py"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps(python)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "ci"
