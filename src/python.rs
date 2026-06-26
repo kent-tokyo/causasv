@@ -93,13 +93,14 @@ impl PyASVExplainer {
     /// Args:
     ///   value_fn: callable (list[str]) -> float.
     ///             Receives a sorted list of node names in the coalition.
-    ///   method:   "approx" (default), "exact", or "exact_tree".
+    ///   method:   "auto" (default), "approx", "exact", or "exact_tree".
+    ///             "auto" selects exact for n≤8, exact_tree for rooted trees, approx otherwise.
     ///   n_samples: number of samples for approximate method (default 10_000).
     ///   seed:     RNG seed for reproducibility (default None = random).
     ///
     /// Returns:
     ///   dict[str, float] mapping node name to its ASV value.
-    #[pyo3(signature = (value_fn, method = "approx", n_samples = 10_000, seed = None))]
+    #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
     fn explain(
         &self,
         py: Python<'_>,
@@ -120,19 +121,22 @@ impl PyASVExplainer {
                 .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
         };
 
-        let result = match method {
-            "approx" => {
-                let mut cfg = SamplingConfig::new(n_samples);
-                if let Some(s) = seed {
-                    cfg = cfg.with_seed(s);
-                }
-                self.inner.approximate(rust_fn, cfg)
+        let make_cfg = || {
+            let mut cfg = SamplingConfig::new(n_samples);
+            if let Some(s) = seed {
+                cfg = cfg.with_seed(s);
             }
+            cfg
+        };
+
+        let result = match method {
+            "auto" => self.inner.auto(rust_fn, make_cfg()),
+            "approx" => self.inner.approximate(rust_fn, make_cfg()),
             "exact" => self.inner.exact(rust_fn),
             "exact_tree" => self.inner.exact_tree(rust_fn),
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown method '{method}': use 'approx', 'exact', or 'exact_tree'"
+                    "unknown method '{method}': use 'auto', 'approx', 'exact', or 'exact_tree'"
                 )))
             }
         }

@@ -140,3 +140,76 @@ fn test_rooted_tree_r_ab_ac() {
     assert!((result.values[&b] - 5.0).abs() < EPS);
     assert!((result.values[&c] - 19.0 / 3.0).abs() < EPS);
 }
+
+// ── auto dispatch tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_auto_small_dag_uses_exact() {
+    // n=3 chain → auto dispatches to exact (n ≤ 8)
+    let (dag, a, b, c) = chain_3();
+    let explainer = AsvExplainer::new(dag);
+    let auto = explainer
+        .auto(|s| Ok(s.len() as f64), causasv::SamplingConfig::new(100))
+        .unwrap();
+    assert!(auto.is_exact);
+    assert!((auto.values[&a] - 1.0).abs() < EPS);
+    assert!((auto.values[&b] - 1.0).abs() < EPS);
+    assert!((auto.values[&c] - 1.0).abs() < EPS);
+}
+
+#[test]
+fn test_auto_rooted_tree_uses_exact_tree() {
+    // n=7 balanced tree → auto dispatches to exact_tree (is rooted tree, n > 8? No n=7)
+    // Use n=10 caterpillar to force tree path (n > 8, rooted tree)
+    let mut dag = Dag::new();
+    let ns: Vec<_> = (0..5).map(|i| dag.add_node(&format!("n{i}"))).collect();
+    let ls: Vec<_> = (0..5).map(|i| dag.add_node(&format!("l{i}"))).collect();
+    for i in 0..4 {
+        dag.add_edge(ns[i], ns[i + 1]).unwrap();
+    }
+    for i in 0..5 {
+        dag.add_edge(ns[i], ls[i]).unwrap();
+    }
+    let explainer = AsvExplainer::new(dag);
+    let auto = explainer
+        .auto(|s| Ok(s.len() as f64), causasv::SamplingConfig::new(100))
+        .unwrap();
+    // exact_tree sets is_exact = true
+    assert!(auto.is_exact);
+}
+
+#[test]
+fn test_auto_general_dag_uses_approx() {
+    // Diamond (n=4, not a tree) with n > 8? n=4 → auto uses exact (n ≤ 8).
+    // Use a larger general DAG (n=9, not a tree) to force approx path.
+    let mut dag = Dag::new();
+    // 9-node graph: 3 chains of 3 that merge at a final node
+    // This is NOT a rooted tree (collider at the end)
+    let a = dag.add_node("a");
+    let b = dag.add_node("b");
+    let c = dag.add_node("c");
+    let d = dag.add_node("d");
+    let e = dag.add_node("e");
+    let f = dag.add_node("f");
+    let g = dag.add_node("g");
+    let h = dag.add_node("h");
+    let sink = dag.add_node("sink");
+    dag.add_edge(a, b).unwrap();
+    dag.add_edge(b, c).unwrap();
+    dag.add_edge(c, sink).unwrap();
+    dag.add_edge(d, e).unwrap();
+    dag.add_edge(e, f).unwrap();
+    dag.add_edge(f, sink).unwrap();
+    dag.add_edge(g, h).unwrap();
+    dag.add_edge(h, sink).unwrap();
+    let explainer = AsvExplainer::new(dag);
+    let auto = explainer
+        .auto(
+            |s| Ok(s.len() as f64),
+            causasv::SamplingConfig::new(500).with_seed(0),
+        )
+        .unwrap();
+    // approx path: is_exact = false
+    assert!(!auto.is_exact);
+    assert!(auto.effective_sample_size.is_some());
+}

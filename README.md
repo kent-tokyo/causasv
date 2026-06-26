@@ -84,7 +84,7 @@ explainer = ASVExplainer(dag)
 
 values = explainer.explain(
     value_fn=lambda feature_names: my_model_score(feature_names),
-    method="approx",
+    method="auto",   # exact for n≤8, exact_tree for rooted trees, approx otherwise
     n_samples=10_000,
     seed=42,
 )
@@ -121,10 +121,21 @@ The brute-force `exact` implementation is used as the reference oracle in tests 
 
 The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each by the hook-length formula, avoiding explicit enumeration of all linear extensions. Caterpillar trees of depth 30 see orders-of-magnitude speedups over brute-force.
 
-**Paper alignment** — *Beyond Shapley: Efficient Computation of Asymmetric Shapley Values*:
+## Paper correspondence
+
+*Beyond Shapley: Efficient Computation of Asymmetric Shapley Values*
+
+| Algorithm component | causasv |
+|---------------------|---------|
+| ASV definition | ✅ `exact` (brute-force oracle) |
+| Rooted tree exact algorithm | ✅ `exact_tree` (order-ideal DP + hook-length formula) |
+| Importance-sampling approximation for general DAGs | ✅ `approx` |
+| General DAG optimized DP | 🚧 planned |
+| Causal discovery | ❌ out of scope |
+
 - `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
 - `approx` implements importance-weighted topological ordering sampling for general DAGs.
-- `exact` is a brute-force baseline oracle; not from the paper.
+- `exact` is a brute-force baseline oracle used as a correctness reference in tests.
 
 ## Performance
 
@@ -139,6 +150,9 @@ Benchmarks on Apple M-series (arm64, release build). `v(S) = |S|` (additive valu
 | Caterpillar tree | 10 | 945 | `exact_tree` (DP) | ~347 µs |
 | Approximate (chain) | 10 | — | `approx` (1k samples) | ~2.9 ms |
 
+> Exact enumeration would require visiting ~22 million valid causal orderings for n=15;
+> `exact_tree` computes the same ASV in milliseconds via order-ideal DP.
+
 Note: for n ≤ ~8, `exact` is often faster than `exact_tree` due to lower allocator overhead.
 `exact_tree` becomes the only feasible exact method for larger trees.
 Run with `cargo bench` to reproduce.
@@ -146,6 +160,7 @@ Run with `cargo bench` to reproduce.
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
+- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs, use `exact` (small n) or `approx`.
 - Python bindings are minimal; NumPy integration and richer ergonomics are planned.
 - No built-in causal discovery, model training, or automatic graph construction.
 

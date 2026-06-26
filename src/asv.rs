@@ -96,4 +96,27 @@ impl AsvExplainer {
         self.dag.validate()?;
         tree_exact_asv(&self.dag, value_fn)
     }
+
+    /// Automatic method selection based on graph size and structure.
+    ///
+    /// Dispatch rules (justified by benchmarks on n=7 balanced tree):
+    /// - n ≤ 8: `exact` — brute-force is fastest due to lower allocator overhead
+    /// - n > 8, rooted directed tree: `exact_tree` — DP avoids millions of enumerations
+    /// - otherwise: `approximate` — general DAG or large n
+    ///
+    /// `config` is used only when the approximate path is taken.
+    pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        self.dag.validate()?;
+        let n = self.dag.node_count();
+        if n <= 8 {
+            self.exact(value_fn)
+        } else if crate::tree::find_rooted_tree_root(&self.dag).is_ok() {
+            self.exact_tree(value_fn)
+        } else {
+            self.approximate(value_fn, config)
+        }
+    }
 }

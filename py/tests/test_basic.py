@@ -140,3 +140,21 @@ def test_from_networkx():
     assert abs(values["a"] - 1.0) < 1e-9
     assert abs(values["b"] - 1.0) < 1e-9
     assert abs(values["c"] - 1.0) < 1e-9
+
+
+def test_auto_method_default():
+    # Default method is now "auto"; chain n=3 → exact path
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    values = explainer.explain(lambda n: float(len(n)))  # no method= means "auto"
+    assert abs(values["a"] - 1.0) < 1e-9
+    assert abs(values["b"] - 1.0) < 1e-9
+    assert abs(values["c"] - 1.0) < 1e-9
+
+
+def test_auto_matches_explicit_exact():
+    dag1 = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    dag2 = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    v_auto = ASVExplainer(dag1).explain(lambda n: float(len(n)), method="auto")
+    v_exact = ASVExplainer(dag2).explain(lambda n: float(len(n)), method="exact")
+    assert v_auto == v_exact
