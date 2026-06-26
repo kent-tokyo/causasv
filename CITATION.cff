@@ -3,8 +3,9 @@ title: causasv
 message: "If you use this software, please cite it as below."
 type: software
 authors:
-  - name: causasv contributors
-version: 0.1.0
+  - alias: kent-tokyo
+    name: kent-tokyo
+version: 0.2.0
 url: "https://github.com/kent-tokyo/causasv"
 license: "MIT OR Apache-2.0"
 references:

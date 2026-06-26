@@ -102,23 +102,24 @@ The approximate estimator uses self-normalized importance sampling to correct fo
 
 ## Status
 
-Experimental — v0.1.0. Public API may change before v1.0.
+Experimental — v0.2.0. Public API may change before v1.0.
 
 ## Algorithm status
 
 | Method | Implementation | Notes |
 |--------|---------------|-------|
 | `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
-| `exact_tree` | Validates rooted tree, then enumerates | Efficient tree DP planned for v0.2.0 |
+| `exact_tree` | Rooted tree validation + order-ideal DP | Efficient; avoids full linear extension enumeration |
 | `approx` | Self-normalized IS over topological orderings | Corrects frontier-sampler bias |
 
 The brute-force `exact` implementation is used as the reference oracle in tests for all other methods.
 
+The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each by the hook-length formula, avoiding explicit enumeration of all linear extensions. Caterpillar trees of depth 30 see orders-of-magnitude speedups over brute-force.
+
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
-- `exact_tree` validates and computes using linear extension enumeration; efficient tree DP is planned for v0.2.0.
-- Python bindings are minimal in v0.1.0; NumPy integration and richer ergonomics are planned.
+- Python bindings are minimal; NumPy integration and richer ergonomics are planned.
 - No built-in causal discovery, model training, or automatic graph construction.
 
 ## Building Python bindings
