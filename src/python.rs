@@ -103,7 +103,7 @@ impl PyASVExplainer {
     #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
     fn explain(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         value_fn: PyObject,
         method: &str,
         n_samples: usize,

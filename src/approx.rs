@@ -83,8 +83,8 @@ where
                 || (vec![0.0f64; n], 0.0f64, 0.0f64),
                 |mut acc, item| {
                     let (local_num, w, wsq) = item?;
-                    for i in 0..n {
-                        acc.0[i] += local_num[i];
+                    for (a, b) in acc.0.iter_mut().zip(&local_num) {
+                        *a += b;
                     }
                     acc.1 += w;
                     acc.2 += wsq;
@@ -94,8 +94,8 @@ where
             .try_reduce(
                 || (vec![0.0f64; n], 0.0f64, 0.0f64),
                 |mut a, b| {
-                    for i in 0..n {
-                        a.0[i] += b.0[i];
+                    for (x, y) in a.0.iter_mut().zip(&b.0) {
+                        *x += y;
                     }
                     Ok((a.0, a.1 + b.1, a.2 + b.2))
                 },
