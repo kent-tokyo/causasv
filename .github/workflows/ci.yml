@@ -28,4 +28,4 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install maturin pytest
           cd py && ../.venv/bin/maturin develop --features python
-          ../.venv/bin/python -m pytest py/tests/
+          ../.venv/bin/python -m pytest tests/
