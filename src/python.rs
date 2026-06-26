@@ -76,14 +76,14 @@ impl PyASVExplainer {
     /// Shared computation logic for both explain() and explain_with_diagnostics().
     fn run(
         &self,
-        value_fn: PyObject,
+        value_fn: Py<PyAny>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
     ) -> PyResult<AsvResult> {
         let names = &self.names;
         let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let name_list: Vec<&str> = coalition
                     .iter()
                     .map(|id| names[id.0 as usize].as_str())
@@ -150,7 +150,7 @@ impl PyASVExplainer {
     fn explain(
         &self,
         _py: Python<'_>,
-        value_fn: PyObject,
+        value_fn: Py<PyAny>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
@@ -170,7 +170,7 @@ impl PyASVExplainer {
     fn explain_with_diagnostics<'py>(
         &self,
         py: Python<'py>,
-        value_fn: PyObject,
+        value_fn: Py<PyAny>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
