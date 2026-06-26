@@ -1,5 +1,6 @@
 use causasv::{AsvExplainer, Dag, SamplingConfig};
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn make_chain(n: usize) -> Dag {
     let mut dag = Dag::new();
