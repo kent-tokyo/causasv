@@ -19,8 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 thiserror = "1"
-rand = "0.8"
-rand_chacha = "0.10"
+rand = "0.10"
 indexmap = "2"
 rayon = "1"
 

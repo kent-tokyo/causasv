@@ -1,6 +1,6 @@
-use rand::Rng;
+use rand::RngExt;
 use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
+use rand::rngs::StdRng;
 
 use crate::graph::{Dag, NodeId};
 
@@ -31,7 +31,7 @@ pub(crate) struct SampledOrdering {
     pub log_q: f64,
 }
 
-pub(crate) fn sample_one(dag: &Dag, rng: &mut ChaCha8Rng) -> SampledOrdering {
+pub(crate) fn sample_one(dag: &Dag, rng: &mut StdRng) -> SampledOrdering {
     let n = dag.node_count();
     let mut in_deg = dag.in_degrees();
     let mut ordering = Vec::with_capacity(n);
@@ -43,7 +43,7 @@ pub(crate) fn sample_one(dag: &Dag, rng: &mut ChaCha8Rng) -> SampledOrdering {
         frontier.clear();
         frontier.extend((0..n).filter(|&i| in_deg[i] == 0));
         log_q -= (frontier.len() as f64).ln();
-        let idx = rng.gen_range(0..frontier.len());
+        let idx = rng.random_range(0..frontier.len());
         let node = NodeId(frontier[idx] as u32);
         ordering.push(node);
         in_deg[node.0 as usize] = usize::MAX;
@@ -55,10 +55,10 @@ pub(crate) fn sample_one(dag: &Dag, rng: &mut ChaCha8Rng) -> SampledOrdering {
     SampledOrdering { ordering, log_q }
 }
 
-pub(crate) fn make_rng(seed: Option<u64>) -> ChaCha8Rng {
+pub(crate) fn make_rng(seed: Option<u64>) -> StdRng {
     match seed {
-        Some(s) => ChaCha8Rng::seed_from_u64(s),
-        None => ChaCha8Rng::from_entropy(),
+        Some(s) => StdRng::seed_from_u64(s),
+        None => StdRng::from_rng(&mut rand::rng()),
     }
 }
 
