@@ -3,9 +3,16 @@
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/kent-tokyo/causasv/actions/workflows/codeql.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/codeql.yml)
 [![Security](https://github.com/kent-tokyo/causasv/actions/workflows/security.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/security.yml)
+<br>
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
+[![Downloads](https://img.shields.io/crates/d/causasv.svg)](https://crates.io/crates/causasv)
 [![GitHub release](https://img.shields.io/github/v/release/kent-tokyo/causasv)](https://github.com/kent-tokyo/causasv/releases)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+<br>
+[![MSRV](https://img.shields.io/badge/MSRV-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://doc.rust-lang.org/nomicon/meet-safe-and-unsafe.html)
 
 **English** | [日本語](README_ja.md)
 
@@ -132,6 +139,18 @@ The brute-force `exact` implementation is used as the reference oracle in tests 
 The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each by the hook-length formula, avoiding explicit enumeration of all linear extensions. Caterpillar trees of depth 30 see orders-of-magnitude speedups over brute-force.
 
 The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (orderings of valid order ideals S) and `dp_ind[T]` (linear extensions of any induced subgraph G[T]). The ASV for each node i accumulates `dp_fwd[S] × dp_ind[V\(S∪{i})] × (v(S∪{i}) − v(S))` over all valid transitions. This is the order-ideal DP generalized from trees to arbitrary DAGs.
+
+## Feature matrix
+
+| Feature | Rust | Python | Status |
+|---------|:----:|:------:|--------|
+| Exact ASV (brute-force) | ✅ | ✅ | Stable |
+| Rooted-tree exact DP | ✅ | ✅ | Experimental |
+| General DAG exact DP (n ≤ 20) | ✅ | ✅ | Experimental |
+| Approximate ASV with ESS | ✅ | ✅ | Experimental |
+| Adaptive approximation | 🚧 | 🚧 | Planned (v0.6) |
+| sklearn / NumPy helper | ❌ | 🚧 | Planned (v0.7) |
+| Graph export (DOT / networkx) | 🚧 | 🚧 | Planned (v0.7) |
 
 ## Paper correspondence
 

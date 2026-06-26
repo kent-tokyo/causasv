@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Fast Causal Asymmetric Shapley Values for DAGs.
 //!
 //! # Quick Start
