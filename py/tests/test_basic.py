@@ -260,6 +260,27 @@ def test_explain_adaptive_matches_exact():
         assert abs(adaptive["values"][node] - exact[node]) < 0.05
 
 
+def test_tabular_explainer():
+    np = pytest.importorskip("numpy")
+    from causasv import TabularExplainer
+
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0], [3.0, 4.0]])
+    x = np.array([10.0, 20.0])
+    feature_names = ["f0", "f1"]
+    dag = CausalDAG.from_edges([("f0", "f1")])
+
+    explainer = TabularExplainer.from_model(SumModel(), dag, background, feature_names)
+    values = explainer.explain_instance(x, method="exact")
+    assert set(values.keys()) == {"f0", "f1"}
+    # efficiency axiom
+    baseline_sum = float(background.mean(axis=0).sum())
+    assert abs(sum(values.values()) - (x.sum() - baseline_sum)) < 1e-6
+
+
 def test_make_tabular_value_fn():
     np = pytest.importorskip("numpy")
     from causasv import make_tabular_value_fn
