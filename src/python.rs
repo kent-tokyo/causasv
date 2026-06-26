@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
-use crate::asv::AsvExplainer;
+use crate::asv::{AsvExplainer, AsvResult};
 use crate::error::CausasvError;
 use crate::graph::{Dag as RustDag, NodeId};
 use crate::sampler::SamplingConfig;
@@ -71,6 +72,58 @@ pub struct PyASVExplainer {
     names: Vec<String>,
 }
 
+impl PyASVExplainer {
+    /// Shared computation logic for both explain() and explain_with_diagnostics().
+    fn run(
+        &self,
+        value_fn: PyObject,
+        method: &str,
+        n_samples: usize,
+        seed: Option<u64>,
+    ) -> PyResult<AsvResult> {
+        let names = &self.names;
+        let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
+            Python::with_gil(|py| {
+                let name_list: Vec<&str> = coalition
+                    .iter()
+                    .map(|id| names[id.0 as usize].as_str())
+                    .collect();
+                value_fn
+                    .call1(py, (name_list,))
+                    .and_then(|r| r.extract::<f64>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
+        };
+        let make_cfg = || {
+            let mut cfg = SamplingConfig::new(n_samples);
+            if let Some(s) = seed {
+                cfg = cfg.with_seed(s);
+            }
+            cfg
+        };
+        match method {
+            "auto" => self.inner.auto(rust_fn, make_cfg()),
+            "approx" => self.inner.approximate(rust_fn, make_cfg()),
+            "exact" => self.inner.exact(rust_fn),
+            "exact_tree" => self.inner.exact_tree(rust_fn),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown method '{method}': use 'auto', 'approx', 'exact', or 'exact_tree'"
+                )));
+            }
+        }
+        .map_err(py_err)
+    }
+
+    fn values_map(&self, result: &AsvResult) -> HashMap<String, f64> {
+        result
+            .values
+            .iter()
+            .map(|(id, &v)| (self.names[id.0 as usize].clone(), v))
+            .collect()
+    }
+}
+
 #[pymethods]
 impl PyASVExplainer {
     /// Create an explainer from a CausalDAG. Validates the graph immediately.
@@ -90,16 +143,8 @@ impl PyASVExplainer {
 
     /// Compute ASV values.
     ///
-    /// Args:
-    ///   value_fn: callable (list[str]) -> float.
-    ///             Receives a sorted list of node names in the coalition.
-    ///   method:   "auto" (default), "approx", "exact", or "exact_tree".
-    ///             "auto" selects exact for n≤8, exact_tree for rooted trees, approx otherwise.
-    ///   n_samples: number of samples for approximate method (default 10_000).
-    ///   seed:     RNG seed for reproducibility (default None = random).
-    ///
-    /// Returns:
-    ///   dict[str, float] mapping node name to its ASV value.
+    /// Returns a `dict[str, float]` mapping node name to its ASV value.
+    /// For approximate methods, use `explain_with_diagnostics()` to also get ESS.
     #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
     fn explain(
         &self,
@@ -108,51 +153,34 @@ impl PyASVExplainer {
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
-    ) -> PyResult<(HashMap<String, f64>, Option<f64>)> {
-        let names = &self.names;
-        // `move` + `Python::with_gil` makes the closure Send + Sync (required for parallel approx).
-        // GIL is re-acquired per call; threads serialize on it, so Python users see no speedup
-        // but the code stays correct.
-        let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
-            Python::with_gil(|py| {
-                let name_list: Vec<&str> = coalition
-                    .iter()
-                    .map(|id| names[id.0 as usize].as_str())
-                    .collect();
-                value_fn
-                    .call1(py, (name_list,))
-                    .and_then(|r| r.extract::<f64>(py))
-                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
-            })
-        };
+    ) -> PyResult<HashMap<String, f64>> {
+        let result = self.run(value_fn, method, n_samples, seed)?;
+        Ok(self.values_map(&result))
+    }
 
-        let make_cfg = || {
-            let mut cfg = SamplingConfig::new(n_samples);
-            if let Some(s) = seed {
-                cfg = cfg.with_seed(s);
-            }
-            cfg
-        };
-
-        let result = match method {
-            "auto" => self.inner.auto(rust_fn, make_cfg()),
-            "approx" => self.inner.approximate(rust_fn, make_cfg()),
-            "exact" => self.inner.exact(rust_fn),
-            "exact_tree" => self.inner.exact_tree(rust_fn),
-            _ => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown method '{method}': use 'auto', 'approx', 'exact', or 'exact_tree'"
-                )));
-            }
-        }
-        .map_err(py_err)?;
-
-        let values = result
-            .values
-            .iter()
-            .map(|(id, &v)| (names[id.0 as usize].clone(), v))
-            .collect();
-        Ok((values, result.effective_sample_size))
+    /// Compute ASV values with diagnostics.
+    ///
+    /// Returns a dict with keys:
+    ///   - `"values"`: dict[str, float] — ASV per node
+    ///   - `"ess"`: float | None — effective sample size (approx only)
+    ///   - `"n_samples"`: int — orderings used
+    ///   - `"is_exact"`: bool
+    #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
+    fn explain_with_diagnostics<'py>(
+        &self,
+        py: Python<'py>,
+        value_fn: PyObject,
+        method: &str,
+        n_samples: usize,
+        seed: Option<u64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let result = self.run(value_fn, method, n_samples, seed)?;
+        let d = PyDict::new(py);
+        d.set_item("values", self.values_map(&result))?;
+        d.set_item("ess", result.effective_sample_size)?;
+        d.set_item("n_samples", result.n_samples)?;
+        d.set_item("is_exact", result.is_exact)?;
+        Ok(d)
     }
 }
 

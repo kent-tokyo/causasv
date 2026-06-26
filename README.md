@@ -84,6 +84,19 @@ values = explainer.explain(
 
 The Python `value_fn` receives a sorted list of feature names present in the coalition and must return a float.
 
+For approximate methods, use `explain_with_diagnostics()` to inspect the Effective Sample Size (ESS):
+
+```python
+info = explainer.explain_with_diagnostics(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    method="approx",
+    n_samples=10_000,
+)
+print(info["values"])    # dict[str, float]
+print(info["ess"])       # float — ESS ≈ n_samples means reliable; ESS ≪ n_samples means high variance
+print(info["is_exact"])  # False
+```
+
 ## Exact vs Approximate
 
 | Method | When to use | API |
