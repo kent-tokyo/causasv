@@ -137,6 +137,39 @@ fn test_balanced_tree_matches_bruteforce() {
 }
 
 #[test]
+fn test_caterpillar_matches_bruteforce() {
+    // Caterpillar: n0→n1→n2→n3→n4 (chain) + each ni has leaf li
+    // 10 nodes total. L(T) = 945.
+    let make_dag = || {
+        let mut dag = Dag::new();
+        let ns: Vec<_> = (0..5).map(|i| dag.add_node(&format!("n{i}"))).collect();
+        let ls: Vec<_> = (0..5).map(|i| dag.add_node(&format!("l{i}"))).collect();
+        for i in 0..4 {
+            dag.add_edge(ns[i], ns[i + 1]).unwrap();
+        }
+        for i in 0..5 {
+            dag.add_edge(ns[i], ls[i]).unwrap();
+        }
+        dag
+    };
+    let exact = AsvExplainer::new(make_dag())
+        .exact(|s| Ok((s.len() as f64).powi(2)))
+        .unwrap();
+    let tree = AsvExplainer::new(make_dag())
+        .exact_tree(|s| Ok((s.len() as f64).powi(2)))
+        .unwrap();
+    for node in exact.values.keys() {
+        assert!(
+            approx_eq(exact.values[node], tree.values[node], EPS),
+            "mismatch at {:?}: exact={} dp={}",
+            node,
+            exact.values[node],
+            tree.values[node]
+        );
+    }
+}
+
+#[test]
 fn test_exact_tree_is_marked_exact() {
     let mut dag = Dag::new();
     let r = dag.add_node("r");
