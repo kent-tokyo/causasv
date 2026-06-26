@@ -43,6 +43,6 @@ pub mod python;
 pub use asv::{AsvExplainer, AsvResult};
 pub use error::CausasvError;
 pub use graph::{Dag, NodeId};
-pub use sampler::SamplingConfig;
+pub use sampler::{AdaptiveSamplingConfig, SamplingConfig};
 pub use topo::{enumerate_topos, topo_sort};
 pub use value_function::ValueFn;

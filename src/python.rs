@@ -7,7 +7,7 @@ use pyo3::types::PyDict;
 use crate::asv::{AsvExplainer, AsvResult};
 use crate::error::CausasvError;
 use crate::graph::{Dag as RustDag, NodeId};
-use crate::sampler::SamplingConfig;
+use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
 
 #[pyclass(name = "CausalDAG")]
 pub struct PyCausalDAG {
@@ -229,6 +229,74 @@ impl PyASVExplainer {
         d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
         d.set_item("method", method)?;
+        Ok(d)
+    }
+
+    /// Adaptive approximate ASV: runs sampling in batches until convergence or max_samples.
+    ///
+    /// Returns a dict with keys: values, ess, ess_ratio, n_samples, seed, is_exact,
+    /// method, converged, stderr.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn, min_samples=1_000, max_samples=100_000,
+                        batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None))]
+    fn explain_adaptive<'py>(
+        &self,
+        py: Python<'py>,
+        value_fn: Py<PyAny>,
+        min_samples: usize,
+        max_samples: usize,
+        batch_size: usize,
+        rel_tol: f64,
+        ess_ratio_min: f64,
+        seed: Option<u64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let names = &self.names;
+        let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
+            Python::attach(|py| {
+                let name_list: Vec<&str> = coalition
+                    .iter()
+                    .map(|id| names[id.0 as usize].as_str())
+                    .collect();
+                value_fn
+                    .call1(py, (name_list,))
+                    .and_then(|r| r.extract::<f64>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
+        };
+        let config = AdaptiveSamplingConfig {
+            min_samples,
+            max_samples,
+            batch_size,
+            rel_tol,
+            ess_ratio_min,
+            seed,
+        };
+        let result = self
+            .inner
+            .approximate_adaptive(rust_fn, config)
+            .map_err(py_err)?;
+        let ess_ratio = result
+            .effective_sample_size
+            .map(|e| e / result.n_samples as f64);
+        let stderr_map: HashMap<String, f64> = result
+            .stderr
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .map(|(id, &v)| (self.names[id.0 as usize].clone(), v))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let d = PyDict::new(py);
+        d.set_item("values", self.values_map(&result))?;
+        d.set_item("ess", result.effective_sample_size)?;
+        d.set_item("ess_ratio", ess_ratio)?;
+        d.set_item("n_samples", result.n_samples)?;
+        d.set_item("seed", result.seed)?;
+        d.set_item("is_exact", result.is_exact)?;
+        d.set_item("method", "approx_adaptive")?;
+        d.set_item("converged", result.converged)?;
+        d.set_item("stderr", stderr_map)?;
         Ok(d)
     }
 }

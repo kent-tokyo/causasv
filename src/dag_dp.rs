@@ -116,5 +116,7 @@ where
         seed: None,
         is_exact: true,
         effective_sample_size: None,
+        converged: None,
+        stderr: None,
     })
 }

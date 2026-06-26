@@ -108,6 +108,81 @@ fn bench_tree_dp_caterpillar_10(c: &mut Criterion) {
     });
 }
 
+// ── exact_dag (order-ideal DP for general DAGs) ──────────────────────────────
+
+fn make_two_parallel_chains(half: usize) -> Dag {
+    // Two independent chains of length `half` sharing nothing — a general DAG.
+    let mut dag = Dag::new();
+    let a: Vec<_> = (0..half).map(|i| dag.add_node(&format!("a{i}"))).collect();
+    let b: Vec<_> = (0..half).map(|i| dag.add_node(&format!("b{i}"))).collect();
+    for i in 0..half - 1 {
+        dag.add_edge(a[i], a[i + 1]).unwrap();
+        dag.add_edge(b[i], b[i + 1]).unwrap();
+    }
+    dag
+}
+
+fn make_diamond_dag(width: usize) -> Dag {
+    // source → width middle nodes → sink
+    let mut dag = Dag::new();
+    let src = dag.add_node("src");
+    let mids: Vec<_> = (0..width).map(|i| dag.add_node(&format!("m{i}"))).collect();
+    let snk = dag.add_node("snk");
+    for &m in &mids {
+        dag.add_edge(src, m).unwrap();
+        dag.add_edge(m, snk).unwrap();
+    }
+    dag
+}
+
+fn bench_exact_dag_chain_10(c: &mut Criterion) {
+    let dag = make_chain(10);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_dag_chain_10", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+fn bench_exact_dag_two_chains_12(c: &mut Criterion) {
+    let dag = make_two_parallel_chains(6); // n = 12
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_dag_two_parallel_chains_12", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+fn bench_exact_dag_diamond_10(c: &mut Criterion) {
+    let dag = make_diamond_dag(8); // n = 10 (src + 8 + snk)
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_dag_diamond_10", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+fn bench_exact_dag_chain_16(c: &mut Criterion) {
+    let dag = make_chain(16);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_dag_chain_16", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
 // ── approximate ─────────────────────────────────────────────────────────────
 
 fn bench_approx_chain_10(c: &mut Criterion) {
@@ -147,6 +222,10 @@ criterion_group!(
     bench_tree_dp_balanced_7,
     bench_tree_dp_balanced_15,
     bench_tree_dp_caterpillar_10,
+    bench_exact_dag_chain_10,
+    bench_exact_dag_two_chains_12,
+    bench_exact_dag_diamond_10,
+    bench_exact_dag_chain_16,
     bench_approx_chain_10,
     bench_approx_tree,
 );
