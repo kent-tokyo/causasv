@@ -158,3 +158,88 @@ def test_auto_matches_explicit_exact():
     v_auto = ASVExplainer(dag1).explain(lambda n: float(len(n)), method="auto")
     v_exact = ASVExplainer(dag2).explain(lambda n: float(len(n)), method="exact")
     assert v_auto == v_exact
+
+
+def test_exact_dag_method():
+    # Diamond DAG: a->b, a->c, b->d, c->d — general DAG, not a tree.
+    dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    explainer = ASVExplainer(dag)
+    values = explainer.explain(lambda n: float(len(n)), method="exact_dag")
+    assert set(values.keys()) == {"a", "b", "c", "d"}
+    # Efficiency axiom
+    assert abs(sum(values.values()) - 4.0) < 1e-9
+
+
+def test_explain_with_diagnostics_keys():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_with_diagnostics(lambda n: float(len(n)), method="exact")
+    expected_keys = {"values", "ess", "ess_ratio", "n_samples", "seed", "is_exact", "method"}
+    assert expected_keys == set(info.keys())
+
+
+def test_explain_with_diagnostics_exact():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_with_diagnostics(lambda n: float(len(n)), method="exact")
+    assert info["is_exact"] is True
+    assert info["ess"] is None
+    assert info["ess_ratio"] is None
+    assert info["method"] == "exact"
+    assert info["n_samples"] == 1  # one topological ordering for a chain
+    assert set(info["values"].keys()) == {"a", "b", "c"}
+
+
+def test_explain_with_diagnostics_approx():
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_with_diagnostics(
+        lambda n: float(len(n)), method="approx", n_samples=500, seed=7
+    )
+    assert info["is_exact"] is False
+    assert isinstance(info["ess"], float) and info["ess"] > 0
+    assert isinstance(info["ess_ratio"], float) and 0 < info["ess_ratio"] <= 1.0
+    assert info["n_samples"] == 500
+    assert info["seed"] == 7
+    assert info["method"] == "approx"
+
+
+def test_dag_nodes():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert dag.nodes() == ["a", "b", "c"]
+
+
+def test_dag_edges():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert dag.edges() == [("a", "b"), ("b", "c")]
+
+
+def test_dag_to_dot():
+    dag = CausalDAG.from_edges([("a", "b")])
+    dot = dag.to_dot()
+    assert dot.startswith("digraph {")
+    assert "a -> b" in dot
+    assert dot.strip().endswith("}")
+
+
+def test_make_tabular_value_fn():
+    np = pytest.importorskip("numpy")
+    from causasv import make_tabular_value_fn
+
+    # Fake model: sum of present feature values.
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0, 3.0], [3.0, 4.0, 5.0]])
+    x = np.array([10.0, 20.0, 30.0])
+    feature_names = ["f0", "f1", "f2"]
+
+    value_fn = make_tabular_value_fn(SumModel(), x, background, feature_names)
+
+    # Empty coalition → baseline sum
+    baseline_sum = background.mean(axis=0).sum()
+    assert abs(value_fn([]) - baseline_sum) < 1e-9
+
+    # Full coalition → x.sum()
+    assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
