@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::approx::approximate_asv;
+use crate::approx::{approximate_asv, approximate_asv_adaptive};
 use crate::cache::value_cached;
 use crate::dag_dp::dag_exact_asv;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
-use crate::sampler::SamplingConfig;
+use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
 use crate::topo::enumerate_topos;
 use crate::tree::tree_exact_asv;
 
@@ -24,6 +24,10 @@ pub struct AsvResult {
     /// ESS ≈ n_samples → uniform IS weights (reliable). ESS ≪ n_samples → high variance.
     /// None for exact methods.
     pub effective_sample_size: Option<f64>,
+    /// True if adaptive sampling converged before max_samples. None for non-adaptive methods.
+    pub converged: Option<bool>,
+    /// Per-node IS standard error estimates. None for exact and non-adaptive approx.
+    pub stderr: Option<BTreeMap<NodeId, f64>>,
 }
 
 /// Entry point for ASV computation over a causal DAG.
@@ -74,6 +78,8 @@ impl AsvExplainer {
             seed: None,
             is_exact: true,
             effective_sample_size: None,
+            converged: None,
+            stderr: None,
         })
     }
 
@@ -137,5 +143,23 @@ impl AsvExplainer {
         } else {
             self.approximate(value_fn, config)
         }
+    }
+
+    /// Adaptive approximate ASV: runs sampling in batches and stops when estimates
+    /// converge (relative change < `config.rel_tol` and ESS ratio ≥ `config.ess_ratio_min`),
+    /// or when `config.max_samples` is reached.
+    ///
+    /// Always single-threaded for deterministic convergence behavior.
+    /// Returns per-node standard error estimates alongside ASV values.
+    pub fn approximate_adaptive<F>(
+        &self,
+        value_fn: F,
+        config: AdaptiveSamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        self.dag.validate()?;
+        approximate_asv_adaptive(&self.dag, value_fn, config)
     }
 }

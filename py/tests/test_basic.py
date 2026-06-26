@@ -222,6 +222,44 @@ def test_dag_to_dot():
     assert dot.strip().endswith("}")
 
 
+def test_explain_adaptive_keys():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_adaptive(
+        lambda n: float(len(n)), min_samples=100, max_samples=500, batch_size=100, seed=0
+    )
+    expected = {"values", "ess", "ess_ratio", "n_samples", "seed", "is_exact",
+                "method", "converged", "stderr"}
+    assert expected == set(info.keys())
+    assert info["method"] == "approx_adaptive"
+    assert info["is_exact"] is False
+    assert isinstance(info["converged"], bool)
+    assert isinstance(info["stderr"], dict)
+
+
+def test_explain_adaptive_converges():
+    # chain n=3 with additive v(S)=|S| should converge quickly
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_adaptive(
+        lambda n: float(len(n)),
+        min_samples=500, max_samples=10_000, batch_size=500, rel_tol=0.01, seed=42
+    )
+    assert info["converged"] is True
+    assert info["n_samples"] < 10_000
+
+
+def test_explain_adaptive_matches_exact():
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    exact = explainer.explain(lambda n: float(len(n)), method="exact")
+    adaptive = explainer.explain_adaptive(
+        lambda n: float(len(n)), min_samples=2_000, max_samples=20_000, seed=1
+    )
+    for node in exact:
+        assert abs(adaptive["values"][node] - exact[node]) < 0.05
+
+
 def test_make_tabular_value_fn():
     np = pytest.importorskip("numpy")
     from causasv import make_tabular_value_fn

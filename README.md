@@ -14,7 +14,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://doc.rust-lang.org/nomicon/meet-safe-and-unsafe.html)
 
-**English** | [日本語](README_ja.md)
+**English** | [日本語](README_ja.md) | [中文](README_zh.md)
 
 `causasv` computes **Asymmetric Shapley Values (ASV)** for causal feature attribution over user-supplied DAGs. It is a Rust-first engine with Python bindings, designed for XAI workflows where feature importance should respect known causal structure.
 
@@ -175,13 +175,13 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 
 | Feature | Rust | Python | Status |
 |---------|:----:|:------:|--------|
-| Exact ASV (brute-force) | ✅ | ✅ | Stable |
-| Rooted-tree exact DP | ✅ | ✅ | Experimental |
-| General DAG exact DP (n ≤ 20) | ✅ | ✅ | Experimental |
-| Approximate ASV with ESS | ✅ | ✅ | Experimental |
-| Adaptive approximation | 🚧 | 🚧 | Planned (v0.6) |
-| sklearn / NumPy helper | ❌ | ✅ | Experimental |
-| Graph export (DOT / networkx) | 🚧 | ✅ | Experimental |
+| Exact ASV (brute-force) | ✓ | ✓ | Stable |
+| Rooted-tree exact DP | ✓ | ✓ | Experimental |
+| General DAG exact DP (n ≤ 20) | ✓ | ✓ | Experimental |
+| Approximate ASV with ESS | ✓ | ✓ | Experimental |
+| Adaptive approximation | planned | planned | Planned (v0.6) |
+| sklearn / NumPy helper | — | ✓ | Experimental |
+| Graph export (DOT / networkx) | planned | ✓ | Experimental |
 
 ## Paper correspondence
 
@@ -189,12 +189,12 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 
 | Algorithm component | causasv |
 |---------------------|---------|
-| ASV definition | ✅ `exact` (brute-force oracle) |
-| Rooted tree exact algorithm | ✅ `exact_tree` (order-ideal DP + hook-length formula) |
-| General DAG exact DP | ✅ `exact_dag` (order-ideal DP, n ≤ 20) |
-| Importance-sampling approximation for general DAGs | ✅ `approx` |
-| General DAG optimized DP | 🚧 planned |
-| Causal discovery | ❌ out of scope |
+| ASV definition | ✓ `exact` (brute-force oracle) |
+| Rooted tree exact algorithm | ✓ `exact_tree` (order-ideal DP + hook-length formula) |
+| General DAG exact DP | ✓ `exact_dag` (order-ideal DP, n ≤ 20) |
+| Importance-sampling approximation for general DAGs | ✓ `approx` |
+| General DAG optimized DP | planned |
+| Causal discovery | — out of scope |
 
 - `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
 - `exact_dag` implements the two-table order-ideal DP for general DAGs (n ≤ 20).
@@ -212,19 +212,25 @@ Benchmarks on Apple M-series (arm64, release build). `v(S) = |S|` (additive valu
 | Balanced binary tree | 15 | ~22 M | `exact` | — (infeasible) |
 | Balanced binary tree | 15 | ~22 M | `exact_tree` (DP) | ~7.8 ms |
 | Caterpillar tree | 10 | 945 | `exact_tree` (DP) | ~347 µs |
+| Chain | 10 | — | `exact_dag` (DP) | ~29 µs |
+| Two parallel chains | 12 | — | `exact_dag` (DP) | ~197 µs |
+| Diamond DAG | 10 | — | `exact_dag` (DP) | ~141 µs |
+| Chain | 16 | — | `exact_dag` (DP) | ~4.9 ms |
 | Approximate (chain) | 10 | — | `approx` (1k samples) | ~2.9 ms |
 
 > Exact enumeration would require visiting ~22 million valid causal orderings for n=15;
 > `exact_tree` computes the same ASV in milliseconds via order-ideal DP.
+> `exact_dag` handles arbitrary DAGs of the same size via 2^n bitmask DP.
 
 Note: for n ≤ ~8, `exact` is often faster than `exact_tree` due to lower allocator overhead.
-`exact_tree` becomes the only feasible exact method for larger trees.
+`exact_tree` becomes the only feasible exact method for larger trees; `exact_dag` covers
+non-tree DAGs of the same scale.
 Run with `cargo bench` to reproduce.
 
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
-- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs, use `exact` (small n) or `approx`.
+- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs with n ≤ 20, use `exact_dag`. For larger DAGs, use `approx`.
 - Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
 - No built-in causal discovery, model training, or automatic graph construction.
 

@@ -14,7 +14,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://doc.rust-lang.org/nomicon/meet-safe-and-unsafe.html)
 
-[English](README.md) | **日本語**
+[English](README.md) | **日本語** | [中文](README_zh.md)
 
 Rust・Python 向けの高速な因果的非対称 Shapley 値（ASV）計算ライブラリ。
 
@@ -188,24 +188,24 @@ values = explainer.explain(value_fn, method="auto")
 
 | アルゴリズムコンポーネント | causasv |
 |--------------------------|---------|
-| ASV の定義 | ✅ `exact`（ブルートフォースオラクル） |
-| 有根木の厳密アルゴリズム | ✅ `exact_tree`（順序イデアル DP + フック長公式） |
-| 一般 DAG の厳密 DP | ✅ `exact_dag`（順序イデアル DP、n ≤ 20） |
-| 一般 DAG の重要度サンプリング近似 | ✅ `approx` |
-| 一般 DAG の最適化 DP | 🚧 計画中 |
-| 因果探索 | ❌ スコープ外 |
+| ASV の定義 | ✓ `exact`（ブルートフォースオラクル） |
+| 有根木の厳密アルゴリズム | ✓ `exact_tree`（順序イデアル DP + フック長公式） |
+| 一般 DAG の厳密 DP | ✓ `exact_dag`（順序イデアル DP、n ≤ 20） |
+| 一般 DAG の重要度サンプリング近似 | ✓ `approx` |
+| 一般 DAG の最適化 DP | 計画中 |
+| 因果探索 | — スコープ外 |
 
 ## フィーチャーマトリクス
 
 | 機能 | Rust | Python | ステータス |
 |------|:----:|:------:|-----------|
-| 厳密 ASV（ブルートフォース） | ✅ | ✅ | 安定 |
-| 有根木の厳密 DP | ✅ | ✅ | 実験的 |
-| 一般 DAG の厳密 DP（n ≤ 20） | ✅ | ✅ | 実験的 |
-| ESS 付き近似 ASV | ✅ | ✅ | 実験的 |
-| 適応型近似 | 🚧 | 🚧 | 計画中（v0.6） |
-| sklearn / NumPy ヘルパー | ❌ | ✅ | 実験的 |
-| グラフエクスポート（DOT / networkx） | 🚧 | ✅ | 実験的 |
+| 厳密 ASV（ブルートフォース） | ✓ | ✓ | 安定 |
+| 有根木の厳密 DP | ✓ | ✓ | 実験的 |
+| 一般 DAG の厳密 DP（n ≤ 20） | ✓ | ✓ | 実験的 |
+| ESS 付き近似 ASV | ✓ | ✓ | 実験的 |
+| 適応型近似 | 計画中 | 計画中 | 計画中（v0.6） |
+| sklearn / NumPy ヘルパー | — | ✓ | 実験的 |
+| グラフエクスポート（DOT / networkx） | 計画中 | ✓ | 実験的 |
 
 ## パフォーマンス
 

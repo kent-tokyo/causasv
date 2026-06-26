@@ -24,6 +24,60 @@ impl SamplingConfig {
     }
 }
 
+/// Configuration for adaptive approximate ASV sampling.
+///
+/// Sampling runs in batches and stops when the per-node ASV estimates change by
+/// less than `rel_tol` relative to their current values *and* the ESS ratio
+/// exceeds `ess_ratio_min`. Falls back to `max_samples` if convergence is never
+/// reached.
+pub struct AdaptiveSamplingConfig {
+    /// Minimum samples before convergence is checked. Default: 1 000.
+    pub min_samples: usize,
+    /// Hard upper bound on total samples. Default: 100 000.
+    pub max_samples: usize,
+    /// Samples per batch. Default: 1 000.
+    pub batch_size: usize,
+    /// Relative tolerance on per-node value change between batches. Default: 0.01.
+    pub rel_tol: f64,
+    /// Minimum required ESS / n_samples ratio. Default: 0.10.
+    pub ess_ratio_min: f64,
+    pub seed: Option<u64>,
+}
+
+impl Default for AdaptiveSamplingConfig {
+    fn default() -> Self {
+        Self {
+            min_samples: 1_000,
+            max_samples: 100_000,
+            batch_size: 1_000,
+            rel_tol: 0.01,
+            ess_ratio_min: 0.10,
+            seed: None,
+        }
+    }
+}
+
+impl AdaptiveSamplingConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
+    pub fn with_rel_tol(mut self, tol: f64) -> Self {
+        self.rel_tol = tol;
+        self
+    }
+
+    pub fn with_max_samples(mut self, max: usize) -> Self {
+        self.max_samples = max;
+        self
+    }
+}
+
 pub(crate) struct SampledOrdering {
     pub ordering: Vec<NodeId>,
     /// log q(π) under the frontier sampler.
