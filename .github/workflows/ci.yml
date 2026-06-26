@@ -14,6 +14,7 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
       - run: cargo test
+      - run: cargo package --no-verify
 
   python:
     runs-on: ubuntu-latest

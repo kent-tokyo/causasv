@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Fast causal Asymmetric Shapley Values for Rust and Python"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/kent-tokyo/causasv"
+homepage = "https://github.com/kent-tokyo/causasv"
+keywords = ["shapley", "causal", "xai", "dag", "explainability"]
+categories = ["science", "mathematics", "algorithms"]
 
 [dependencies]
 thiserror = "1"
