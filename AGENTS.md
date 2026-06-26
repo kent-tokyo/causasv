@@ -430,6 +430,17 @@ Avoid hyphenated names.
 
 Use ASV consistently for Asymmetric Shapley Values.
 
+## CI / GitHub Actions
+
+CodeQL uses the repository's **default CodeQL setup** (enabled via GitHub UI: Settings → Security → Code scanning → Default).
+
+**Do NOT add a custom `.github/workflows/codeql.yml`** — it will conflict with the default setup's SARIF upload and fail with "Code Scanning could not process the submitted SARIF file". This mistake has happened twice; see commits `3bd7838` and `904beac`.
+
+The CodeQL badge in README uses a static `img.shields.io` badge (not a workflow badge):
+```markdown
+[![CodeQL](https://img.shields.io/badge/CodeQL-enabled-blue.svg)](https://github.com/kent-tokyo/causasv/security/code-scanning)
+```
+
 ## Quality Bar
 
 Before considering a task complete:
