@@ -50,8 +50,8 @@ where
             for &node in &sample.ordering {
                 let without = prefix_mask;
                 let with_node = prefix_mask | (1u64 << node.0);
-                numerator[node.0 as usize] +=
-                    w * (value_cached(&mut cache, &value_fn, with_node)?
+                numerator[node.0 as usize] += w
+                    * (value_cached(&mut cache, &value_fn, with_node)?
                         - value_cached(&mut cache, &value_fn, without)?);
                 prefix_mask = with_node;
             }
@@ -71,8 +71,9 @@ where
                     for &node in &sample.ordering {
                         let without = prefix_mask;
                         let with_node = prefix_mask | (1u64 << node.0);
-                        local_num[node.0 as usize] += w * (value_cached(cache, &value_fn, with_node)?
-                            - value_cached(cache, &value_fn, without)?);
+                        local_num[node.0 as usize] += w
+                            * (value_cached(cache, &value_fn, with_node)?
+                                - value_cached(cache, &value_fn, without)?);
                         prefix_mask = with_node;
                     }
                     Ok((local_num, w, w * w))

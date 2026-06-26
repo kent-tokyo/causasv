@@ -222,8 +222,8 @@ where
 
             let s_mask = vec_to_mask(&s_vec);
             let si_mask = s_mask | (1u64 << i.0);
-            phi[i.0 as usize] +=
-                w * (value_cached(&mut cache, &value_fn, si_mask)?
+            phi[i.0 as usize] += w
+                * (value_cached(&mut cache, &value_fn, si_mask)?
                     - value_cached(&mut cache, &value_fn, s_mask)?);
         }
     }
