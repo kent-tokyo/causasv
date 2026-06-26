@@ -14,7 +14,7 @@ pub fn topo_sort(dag: &Dag) -> Result<Vec<NodeId>, CausasvError> {
     let mut heap: BinaryHeap<Reverse<NodeId>> = in_deg
         .iter()
         .enumerate()
-        .filter(|(_, &d)| d == 0)
+        .filter(|&(_, d)| *d == 0)
         .map(|(i, _)| Reverse(NodeId(i as u32)))
         .collect();
     let mut result = Vec::with_capacity(n);

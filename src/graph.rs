@@ -67,7 +67,7 @@ impl Dag {
         let mut queue: std::collections::VecDeque<NodeId> = in_deg
             .iter()
             .enumerate()
-            .filter(|(_, &d)| d == 0)
+            .filter(|&(_, d)| *d == 0)
             .map(|(i, _)| NodeId(i as u32))
             .collect();
         let mut visited = 0usize;

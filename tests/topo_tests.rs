@@ -1,4 +1,4 @@
-use causasv::{enumerate_topos, topo_sort, Dag, NodeId};
+use causasv::{Dag, NodeId, enumerate_topos, topo_sort};
 
 fn is_valid_topo(dag: &Dag, ordering: &[NodeId]) -> bool {
     if ordering.len() != dag.node_count() {

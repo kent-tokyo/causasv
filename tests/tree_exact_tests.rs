@@ -181,3 +181,32 @@ fn test_exact_tree_is_marked_exact() {
     assert!(result.is_exact);
     assert!(result.seed.is_none());
 }
+
+#[test]
+fn test_star_matches_bruteforce() {
+    // r → a, b, c, d  (5-node star)
+    let make_dag = || {
+        let mut dag = Dag::new();
+        let r = dag.add_node("r");
+        for name in ["a", "b", "c", "d"] {
+            let child = dag.add_node(name);
+            dag.add_edge(r, child).unwrap();
+        }
+        dag
+    };
+    let exact = AsvExplainer::new(make_dag())
+        .exact(|s| Ok(s.len() as f64))
+        .unwrap();
+    let tree = AsvExplainer::new(make_dag())
+        .exact_tree(|s| Ok(s.len() as f64))
+        .unwrap();
+    for node in exact.values.keys() {
+        assert!(
+            approx_eq(exact.values[node], tree.values[node], EPS),
+            "star mismatch at {:?}: exact={} tree={}",
+            node,
+            exact.values[node],
+            tree.values[node]
+        );
+    }
+}

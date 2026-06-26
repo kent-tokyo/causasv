@@ -12,7 +12,7 @@ pub(crate) fn find_rooted_tree_root(dag: &Dag) -> Result<NodeId, CausasvError> {
     let roots: Vec<NodeId> = in_deg
         .iter()
         .enumerate()
-        .filter(|(_, &d)| d == 0)
+        .filter(|&(_, d)| *d == 0)
         .map(|(i, _)| NodeId(i as u32))
         .collect();
 

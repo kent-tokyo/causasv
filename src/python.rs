@@ -108,7 +108,7 @@ impl PyASVExplainer {
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
-    ) -> PyResult<HashMap<String, f64>> {
+    ) -> PyResult<(HashMap<String, f64>, Option<f64>)> {
         let names = &self.names;
         // `move` + `Python::with_gil` makes the closure Send + Sync (required for parallel approx).
         // GIL is re-acquired per call; threads serialize on it, so Python users see no speedup
@@ -142,16 +142,17 @@ impl PyASVExplainer {
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "unknown method '{method}': use 'auto', 'approx', 'exact', or 'exact_tree'"
-                )))
+                )));
             }
         }
         .map_err(py_err)?;
 
-        Ok(result
+        let values = result
             .values
             .iter()
             .map(|(id, &v)| (names[id.0 as usize].clone(), v))
-            .collect())
+            .collect();
+        Ok((values, result.effective_sample_size))
     }
 }
 

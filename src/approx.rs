@@ -6,7 +6,7 @@ use crate::asv::AsvResult;
 use crate::cache::value_cached;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
-use crate::sampler::{make_rng, sample_one, SamplingConfig};
+use crate::sampler::{SamplingConfig, make_rng, sample_one};
 
 /// Self-normalized importance sampling estimator for ASV.
 ///
