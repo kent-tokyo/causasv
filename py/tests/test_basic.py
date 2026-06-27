@@ -281,3 +281,68 @@ def test_make_tabular_value_fn():
 
     # Full coalition → x.sum()
     assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# value_fn_batch tests
+# ---------------------------------------------------------------------------
+
+
+def test_value_fn_batch_same_result_as_single():
+    """Batched and single-call paths must agree exactly for the same seed."""
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+
+    def value_fn(names):
+        return float(len(names))
+
+    def value_fn_batch(coalitions):
+        return [float(len(c)) for c in coalitions]
+
+    single = explainer.explain(value_fn=value_fn, method="approx", n_samples=1000, seed=7)
+    batched = explainer.explain(
+        value_fn_batch=value_fn_batch, method="approx", n_samples=1000, seed=7, batch_size=1
+    )
+    for k in single:
+        assert abs(single[k] - batched[k]) < 1e-9, f"mismatch on {k}: {single[k]} vs {batched[k]}"
+
+
+def test_value_fn_batch_diagnostics():
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+
+    def batch_fn(coalitions):
+        return [float(len(c)) for c in coalitions]
+
+    info = explainer.explain_with_diagnostics(
+        value_fn_batch=batch_fn, method="approx", n_samples=500, seed=3, batch_size=50
+    )
+    assert "values" in info
+    assert "ess" in info
+    assert set(info["values"].keys()) == {"x", "y"}
+
+
+def test_value_fn_batch_efficiency():
+    """Batch size > 1 should reduce call count (smoke test: just confirm it runs)."""
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c"), ("a", "c")])
+    explainer = ASVExplainer(dag)
+    call_count = {"n": 0}
+
+    def batch_fn(coalitions):
+        call_count["n"] += 1
+        return [float(len(c)) for c in coalitions]
+
+    explainer.explain(
+        value_fn_batch=batch_fn, method="approx", n_samples=1000, seed=99, batch_size=100
+    )
+    # With batch_size=100 and 1000 samples, we expect ~10 batch calls (not 1000+)
+    assert call_count["n"] <= 20, f"too many batch calls: {call_count['n']}"
+
+
+def test_value_fn_batch_error_on_missing():
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    import pytest
+
+    with pytest.raises(Exception, match="value_fn"):
+        explainer.explain(method="approx", n_samples=100)
