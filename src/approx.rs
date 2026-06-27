@@ -171,6 +171,9 @@ where
         effective_sample_size: Some(ess),
         converged: None,
         stderr: None,
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
     })
 }
 
@@ -279,6 +282,9 @@ where
         effective_sample_size: Some(ess),
         converged: None,
         stderr: None,
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
     })
 }
 
@@ -407,6 +413,9 @@ where
         effective_sample_size: Some(ess),
         converged: Some(converged),
         stderr: Some(stderr),
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
     })
 }
 
@@ -560,5 +569,8 @@ where
         effective_sample_size: Some(ess),
         converged: Some(converged),
         stderr: Some(stderr),
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
     })
 }
