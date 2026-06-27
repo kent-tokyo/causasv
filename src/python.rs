@@ -236,9 +236,12 @@ impl PyASVExplainer {
     ///
     /// Returns a dict with keys: values, ess, ess_ratio, n_samples, seed, is_exact,
     /// method, converged, stderr.
+    ///
+    /// When `ci` is set (e.g. `ci=0.95`), also returns `ci_low`, `ci_high` using a
+    /// normal approximation: value ± Φ⁻¹((1+ci)/2) × stderr.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (value_fn, min_samples=1_000, max_samples=100_000,
-                        batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None))]
+                        batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None, ci=None))]
     fn explain_adaptive<'py>(
         &self,
         py: Python<'py>,
@@ -249,7 +252,15 @@ impl PyASVExplainer {
         rel_tol: f64,
         ess_ratio_min: f64,
         seed: Option<u64>,
+        ci: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        if let Some(ci_level) = ci
+            && !(0.0 < ci_level && ci_level < 1.0)
+        {
+            return Err(PyValueError::new_err(
+                "ci must be in (0, 1), e.g. ci=0.95 for a 95% interval",
+            ));
+        }
         let names = &self.names;
         let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
             Python::attach(|py| {
@@ -278,6 +289,7 @@ impl PyASVExplainer {
         let ess_ratio = result
             .effective_sample_size
             .map(|e| e / result.n_samples as f64);
+        let values_map = self.values_map(&result);
         let stderr_map: HashMap<String, f64> = result
             .stderr
             .as_ref()
@@ -288,7 +300,7 @@ impl PyASVExplainer {
             })
             .unwrap_or_default();
         let d = PyDict::new(py);
-        d.set_item("values", self.values_map(&result))?;
+        d.set_item("values", &values_map)?;
         d.set_item("ess", result.effective_sample_size)?;
         d.set_item("ess_ratio", ess_ratio)?;
         d.set_item("n_samples", result.n_samples)?;
@@ -296,9 +308,34 @@ impl PyASVExplainer {
         d.set_item("is_exact", result.is_exact)?;
         d.set_item("method", "approx_adaptive")?;
         d.set_item("converged", result.converged)?;
-        d.set_item("stderr", stderr_map)?;
+        d.set_item("stderr", &stderr_map)?;
+        if let Some(ci_level) = ci {
+            let z = normal_quantile((1.0 + ci_level) / 2.0);
+            let ci_low: HashMap<String, f64> = values_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v - z * stderr_map.get(k).copied().unwrap_or(0.0)))
+                .collect();
+            let ci_high: HashMap<String, f64> = values_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v + z * stderr_map.get(k).copied().unwrap_or(0.0)))
+                .collect();
+            d.set_item("ci", ci_level)?;
+            d.set_item("ci_low", ci_low)?;
+            d.set_item("ci_high", ci_high)?;
+        }
         Ok(d)
     }
+}
+
+/// Normal quantile function Φ⁻¹(p) via rational approximation.
+///
+/// Abramowitz & Stegun 26.2.17 — |error| < 4.5 × 10⁻⁴.
+/// Sufficient precision for CI display (ci=0.95 → z=1.9600, exact=1.95996).
+fn normal_quantile(p: f64) -> f64 {
+    let t = (-2.0 * (1.0 - p).ln()).sqrt();
+    let c = [2.515_517, 0.802_853, 0.010_328];
+    let d = [1.432_788, 0.189_269, 0.001_308];
+    t - (c[0] + c[1] * t + c[2] * t * t) / (1.0 + d[0] * t + d[1] * t * t + d[2] * t * t * t)
 }
 
 #[pymodule]

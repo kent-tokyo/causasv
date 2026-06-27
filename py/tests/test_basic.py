@@ -237,6 +237,51 @@ def test_explain_adaptive_keys():
     assert isinstance(info["stderr"], dict)
 
 
+def test_explain_adaptive_ci_keys():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_adaptive(
+        lambda n: float(len(n)), min_samples=500, max_samples=5_000, seed=1, ci=0.95
+    )
+    assert "ci_low" in info and "ci_high" in info and "ci" in info
+    assert info["ci"] == 0.95
+    for k in info["values"]:
+        assert info["ci_low"][k] <= info["values"][k] <= info["ci_high"][k], (
+            f"CI violation on {k}: [{info['ci_low'][k]:.4f}, {info['ci_high'][k]:.4f}]"
+            f" does not contain {info['values'][k]:.4f}"
+        )
+
+
+def test_explain_adaptive_ci_width():
+    """Wider CI level → wider interval."""
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+    fn = lambda n: float(len(n))
+    info_90 = explainer.explain_adaptive(fn, min_samples=1_000, max_samples=5_000, seed=2, ci=0.90)
+    info_99 = explainer.explain_adaptive(fn, min_samples=1_000, max_samples=5_000, seed=2, ci=0.99)
+    for k in info_90["values"]:
+        width_90 = info_90["ci_high"][k] - info_90["ci_low"][k]
+        width_99 = info_99["ci_high"][k] - info_99["ci_low"][k]
+        assert width_99 >= width_90, f"99% CI should be wider than 90% CI on {k}"
+
+
+def test_explain_adaptive_ci_no_ci():
+    """Without ci=, ci_low/ci_high/ci are absent from the result."""
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_adaptive(lambda n: float(len(n)), min_samples=100, max_samples=500, seed=0)
+    assert "ci_low" not in info
+    assert "ci_high" not in info
+    assert "ci" not in info
+
+
+def test_explain_adaptive_ci_invalid():
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    with pytest.raises(Exception):
+        explainer.explain_adaptive(lambda n: float(len(n)), ci=1.5)
+
+
 def test_explain_adaptive_converges():
     # chain n=3 with additive v(S)=|S| should converge quickly
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
