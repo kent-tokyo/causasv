@@ -31,6 +31,7 @@ mod dag_dp;
 mod dag_dp_sparse;
 mod error;
 mod graph;
+mod numerics;
 mod sampler;
 mod topo;
 mod tree;

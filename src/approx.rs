@@ -6,20 +6,8 @@ use crate::asv::AsvResult;
 use crate::cache::value_cached;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
+use crate::numerics::kahan_add;
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig, make_rng, sample_one, worker_seed};
-
-/// Kahan compensated addition: accumulates `x` into `*sum` with `*comp` tracking
-/// the running error. Reduces floating-point rounding from O(n·ε) to O(ε²) per step.
-///
-/// Applied to `denominator`, `sum_w_sq`, and per-node `numerator` accumulators
-/// in the seeded-serial and adaptive IS paths.
-#[inline]
-fn kahan_add(sum: &mut f64, comp: &mut f64, x: f64) {
-    let y = x - *comp;
-    let t = *sum + y;
-    *comp = (t - *sum) - y;
-    *sum = t;
-}
 
 /// Self-normalized importance sampling estimator for ASV.
 ///
