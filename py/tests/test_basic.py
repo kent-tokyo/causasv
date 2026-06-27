@@ -188,6 +188,9 @@ def test_explain_with_diagnostics_keys():
         "seed",
         "is_exact",
         "method",
+        "parallel",
+        "num_threads",
+        "deterministic",
     }
     assert expected_keys == set(info.keys())
 
@@ -436,7 +439,57 @@ def test_value_fn_batch_efficiency():
 def test_value_fn_batch_error_on_missing():
     dag = CausalDAG.from_edges([("a", "b")])
     explainer = ASVExplainer(dag)
-    import pytest
 
     with pytest.raises(Exception, match="value_fn"):
         explainer.explain(method="approx", n_samples=100)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic parallel sampling tests
+# ---------------------------------------------------------------------------
+
+
+def test_seeded_parallel_reproducible():
+    """Same seed + parallel=True must give identical values across runs."""
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c"), ("a", "c")])
+    explainer = ASVExplainer(dag)
+    fn = lambda names: float(len(names))
+
+    v1 = explainer.explain(fn, method="approx", n_samples=2000, seed=42, parallel=True)
+    v2 = explainer.explain(fn, method="approx", n_samples=2000, seed=42, parallel=True)
+    assert v1 == v2
+
+
+def test_seeded_parallel_close_to_serial():
+    """Seeded parallel and serial should agree within statistical tolerance."""
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    fn = lambda names: float(len(names))
+
+    serial = explainer.explain(fn, method="approx", n_samples=5000, seed=7, parallel=False)
+    par = explainer.explain(fn, method="approx", n_samples=5000, seed=7, parallel=True)
+    for k in serial:
+        assert abs(serial[k] - par[k]) < 0.05, (
+            f"serial vs parallel diverged on {k}: {serial[k]:.4f} vs {par[k]:.4f}"
+        )
+
+
+def test_seeded_parallel_diagnostics():
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_with_diagnostics(
+        lambda n: float(len(n)), method="approx", n_samples=500, seed=3, parallel=True
+    )
+    assert info["parallel"] is True
+    assert info["deterministic"] is True
+    assert info["seed"] == 3
+
+
+def test_unseeded_parallel_no_determinism_flag():
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_with_diagnostics(
+        lambda n: float(len(n)), method="approx", n_samples=200
+    )
+    assert info["parallel"] is False
+    assert info["deterministic"] is False
