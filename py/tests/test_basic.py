@@ -222,6 +222,22 @@ def test_dag_to_dot():
     assert dot.strip().endswith("}")
 
 
+def test_dag_to_json():
+    import json
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    data = json.loads(dag.to_json())
+    assert set(data["nodes"]) == {"a", "b", "c"}
+    assert {"from": "a", "to": "b"} in data["edges"]
+    assert {"from": "b", "to": "c"} in data["edges"]
+
+
+def test_dag_from_json_roundtrip():
+    dag = CausalDAG.from_edges([("x", "y"), ("y", "z")])
+    restored = CausalDAG.from_json(dag.to_json())
+    assert restored.nodes() == dag.nodes()
+    assert restored.edges() == dag.edges()
+
+
 def test_dag_ancestors():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     assert sorted(dag.ancestors("c")) == ["a", "b"]
@@ -237,12 +253,9 @@ def test_dag_descendants():
 
 
 def test_dag_topological_layers():
-    # chain: a -> b -> c should give [[a], [b], [c]]
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
-    layers = dag.topological_layers()
-    assert layers == [["a"], ["b"], ["c"]]
+    assert dag.topological_layers() == [["a"], ["b"], ["c"]]
 
-    # diamond: a -> b, a -> c, b -> d, c -> d
     dag2 = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
     layers2 = dag2.topological_layers()
     assert layers2[0] == ["a"]
@@ -286,6 +299,27 @@ def test_explain_adaptive_matches_exact():
     )
     for node in exact:
         assert abs(adaptive["values"][node] - exact[node]) < 0.05
+
+
+def test_tabular_explainer():
+    np = pytest.importorskip("numpy")
+    from causasv import TabularExplainer
+
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0], [3.0, 4.0]])
+    x = np.array([10.0, 20.0])
+    feature_names = ["f0", "f1"]
+    dag = CausalDAG.from_edges([("f0", "f1")])
+
+    explainer = TabularExplainer.from_model(SumModel(), dag, background, feature_names)
+    values = explainer.explain_instance(x, method="exact")
+    assert set(values.keys()) == {"f0", "f1"}
+    # efficiency axiom
+    baseline_sum = float(background.mean(axis=0).sum())
+    assert abs(sum(values.values()) - (x.sum() - baseline_sum)) < 1e-6
 
 
 def test_make_tabular_value_fn():
