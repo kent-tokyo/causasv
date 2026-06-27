@@ -567,6 +567,7 @@ impl PyASVExplainer {
         d.set_item("memory_mb", result.memory_mb)?;
         d.set_item("fallback_from", result.fallback_from.as_deref())?;
         d.set_item("fallback_reason", result.fallback_reason.as_deref())?;
+        d.set_item("selected_method", result.method_used.unwrap_or(method))?;
         Ok(d)
     }
 

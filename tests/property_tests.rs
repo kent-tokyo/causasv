@@ -195,7 +195,7 @@ proptest! {
             dag2.add_node(&format!("n{i}"));
         }
         for j in 0..n as u32 {
-            for &p in dag.parents_raw(NodeId(j)) {
+            for &p in dag.parents(NodeId(j)).unwrap() {
                 let new_p = NodeId((n as u32 - 1) - p.0);
                 let new_j = NodeId((n as u32 - 1) - j);
                 let _ = dag2.add_edge(new_p, new_j);

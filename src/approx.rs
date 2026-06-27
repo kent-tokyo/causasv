@@ -203,6 +203,7 @@ where
         memory_mb: None,
         fallback_from: None,
         fallback_reason: None,
+        method_used: None,
     })
 }
 
@@ -324,6 +325,7 @@ where
         memory_mb: None,
         fallback_from: None,
         fallback_reason: None,
+        method_used: None,
     })
 }
 
@@ -473,6 +475,7 @@ where
         memory_mb: None,
         fallback_from: None,
         fallback_reason: None,
+        method_used: None,
     })
 }
 
@@ -647,5 +650,6 @@ where
         memory_mb: None,
         fallback_from: None,
         fallback_reason: None,
+        method_used: None,
     })
 }
