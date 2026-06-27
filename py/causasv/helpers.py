@@ -93,6 +93,57 @@ def _mean_kendall_tau(per_dag, features):
     return sum(taus) / len(taus) if taus else 1.0
 
 
+def explain_stability(explainer, value_fn, seeds, **kwargs):
+    """Run explain() with multiple seeds and return seed-stability metrics.
+
+    Useful for verifying that approximate ASV rankings are consistent across
+    different random seeds before trusting the attribution order.
+
+    Args:
+        explainer: ASVExplainer instance.
+        value_fn: coalition value function ``(list[str]) -> float``.
+        seeds: list of int seeds (at least 2 for meaningful stability).
+        **kwargs: forwarded to ``explainer.explain()`` (method, n_samples, etc.).
+
+    Returns:
+        dict with keys:
+        - ``"mean_values"``: dict[str, float] — mean ASV per feature
+        - ``"std_values"``: dict[str, float] — std ASV per feature (0 = perfect stability)
+        - ``"rank_stability"``: float — mean pairwise Kendall tau (1 = full rank agreement)
+        - ``"per_seed_values"``: dict[int, dict[str, float]] — per-seed results
+
+    Example::
+
+        from causasv import CausalDAG, ASVExplainer
+        from causasv.helpers import explain_stability
+
+        dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
+        explainer = ASVExplainer(dag)
+        result = explain_stability(
+            explainer, value_fn, seeds=[1, 2, 3, 4, 5],
+            method="approx", n_samples=10_000,
+        )
+        print(result["rank_stability"])   # 1.0 = perfectly stable rankings
+        print(result["std_values"])       # small = stable estimates
+    """
+    if not seeds:
+        raise ValueError("seeds must be non-empty")
+    per_seed = {s: explainer.explain(value_fn, seed=s, **kwargs) for s in seeds}
+    features = sorted(per_seed[seeds[0]].keys())
+    k = len(seeds)
+    mean = {f: sum(per_seed[s][f] for s in seeds) / k for f in features}
+    std = {
+        f: (sum((per_seed[s][f] - mean[f]) ** 2 for s in seeds) / k) ** 0.5
+        for f in features
+    }
+    return {
+        "mean_values": mean,
+        "std_values": std,
+        "rank_stability": _mean_kendall_tau(list(per_seed.values()), features),
+        "per_seed_values": dict(zip(seeds, per_seed.values())),
+    }
+
+
 def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=None):
     """Wrap a sklearn-compatible model as a causasv value function.
 
