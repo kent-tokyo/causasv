@@ -120,7 +120,7 @@ impl Dag {
         &self.children[id.0 as usize]
     }
 
-    pub(crate) fn parents_raw(&self, id: NodeId) -> &[NodeId] {
+    pub fn parents_raw(&self, id: NodeId) -> &[NodeId] {
         &self.parents[id.0 as usize]
     }
 

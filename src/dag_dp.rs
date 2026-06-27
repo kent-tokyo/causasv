@@ -19,7 +19,11 @@ use crate::graph::{Dag, NodeId};
 ///
 /// Time: O(2^n × n). Space: O(2^n).
 /// Practical for n ≤ 20 (~1M states, ~16MB for two dp arrays).
-pub(crate) fn dag_exact_asv<F>(dag: &Dag, value_fn: F) -> Result<AsvResult, CausasvError>
+pub(crate) fn dag_exact_asv<F>(
+    dag: &Dag,
+    value_fn: F,
+    parents_mask: &[u64],
+) -> Result<AsvResult, CausasvError>
 where
     F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
 {
@@ -29,15 +33,6 @@ where
             "exact_dag requires n ≤ 20 (2^n DP states), got {n}"
         )));
     }
-
-    // parents_mask[i] = bitmask of all DAG parents of node i
-    let parents_mask: Vec<u64> = (0..n)
-        .map(|i| {
-            dag.parents_raw(NodeId(i as u32))
-                .iter()
-                .fold(0u64, |m, &p| m | (1u64 << p.0))
-        })
-        .collect();
 
     let total_masks = 1usize << n;
     let full_mask = total_masks - 1;
@@ -131,5 +126,7 @@ where
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
     })
 }

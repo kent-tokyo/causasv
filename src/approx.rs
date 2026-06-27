@@ -102,20 +102,27 @@ where
                     let mut rng = make_rng(Some(wseed));
                     let mut cache = HashMap::<u64, f64>::new();
                     let mut local_num = vec![0.0f64; n];
+                    let mut num_c = vec![0.0f64; n];
                     let mut denom = 0.0f64;
+                    let mut denom_c = 0.0f64;
                     let mut wsq = 0.0f64;
+                    let mut wsq_c = 0.0f64;
                     for _ in 0..count {
                         let sample = sample_one(dag, &mut rng);
                         let w = (-sample.log_q).exp();
-                        denom += w;
-                        wsq += w * w;
+                        kahan_add(&mut denom, &mut denom_c, w);
+                        kahan_add(&mut wsq, &mut wsq_c, w * w);
                         let mut prefix_mask: u64 = 0;
                         for &node in &sample.ordering {
                             let without = prefix_mask;
                             let with_node = prefix_mask | (1u64 << node.0);
-                            local_num[node.0 as usize] += w
-                                * (value_cached(&mut cache, &value_fn, with_node)?
-                                    - value_cached(&mut cache, &value_fn, without)?);
+                            let delta = value_cached(&mut cache, &value_fn, with_node)?
+                                - value_cached(&mut cache, &value_fn, without)?;
+                            kahan_add(
+                                &mut local_num[node.0 as usize],
+                                &mut num_c[node.0 as usize],
+                                w * delta,
+                            );
                             prefix_mask = with_node;
                         }
                     }
@@ -194,6 +201,8 @@ where
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
     })
 }
 
@@ -313,6 +322,8 @@ where
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
     })
 }
 
@@ -366,9 +377,13 @@ where
     while total_samples < config.max_samples {
         let batch = config.batch_size.min(config.max_samples - total_samples);
 
-        for _ in 0..batch {
-            let sample = sample_one(dag, &mut rng);
-            let w = (-sample.log_q).exp();
+        let batch_samples: Vec<_> = (0..batch).map(|_| sample_one(dag, &mut rng)).collect();
+        let max_log_w = batch_samples
+            .iter()
+            .map(|s| -s.log_q)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for sample in &batch_samples {
+            let w = ((-sample.log_q) - max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
@@ -456,6 +471,8 @@ where
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
     })
 }
 
@@ -491,9 +508,13 @@ where
     let mut rng = make_rng(config.seed);
     let mut cache = HashMap::<u64, f64>::new();
     let mut numerator = vec![0.0f64; n];
+    let mut num_comp = vec![0.0f64; n];
     let mut num_sq = vec![0.0f64; n];
+    let mut num_sq_comp = vec![0.0f64; n];
     let mut denominator = 0.0f64;
+    let mut denom_comp = 0.0f64;
     let mut sum_w_sq = 0.0f64;
+    let mut wsq_comp = 0.0f64;
     let mut total_samples = 0usize;
     let mut prev_values = vec![f64::NAN; n];
     let mut converged = false;
@@ -535,10 +556,14 @@ where
             }
         }
 
+        let max_log_w = samples
+            .iter()
+            .map(|s| -s.log_q)
+            .fold(f64::NEG_INFINITY, f64::max);
         for s in &samples {
-            let w = (-s.log_q).exp();
-            denominator += w;
-            sum_w_sq += w * w;
+            let w = ((-s.log_q) - max_log_w).exp();
+            kahan_add(&mut denominator, &mut denom_comp, w);
+            kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
             for &node in &s.ordering {
                 let without = *cache.get(&prefix_mask).unwrap();
@@ -546,8 +571,16 @@ where
                 let with = *cache.get(&with_node).unwrap();
                 let delta = with - without;
                 let wd = w * delta;
-                numerator[node.0 as usize] += wd;
-                num_sq[node.0 as usize] += wd * wd;
+                kahan_add(
+                    &mut numerator[node.0 as usize],
+                    &mut num_comp[node.0 as usize],
+                    wd,
+                );
+                kahan_add(
+                    &mut num_sq[node.0 as usize],
+                    &mut num_sq_comp[node.0 as usize],
+                    wd * wd,
+                );
                 prefix_mask = with_node;
             }
         }
@@ -612,5 +645,7 @@ where
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
     })
 }

@@ -38,16 +38,35 @@ pub struct AsvResult {
     pub state_ratio: Option<f64>,
     /// Estimated memory used by sparse DP in MB. None for other methods.
     pub memory_mb: Option<f64>,
+    /// Method that was attempted before falling back (e.g. "exact_dag_sparse"). None normally.
+    pub fallback_from: Option<String>,
+    /// Reason for the fallback (error message). None normally.
+    pub fallback_reason: Option<String>,
 }
 
 /// Entry point for ASV computation over a causal DAG.
 pub struct AsvExplainer {
     dag: Dag,
+    // Bitmask of all DAG parents per node. Safe for n ≤ 63 (1u64 << p.0 is always in-range).
+    // Empty for n > 63; exact_dag / exact_dag_sparse both error before using it.
+    parents_mask: Vec<u64>,
 }
 
 impl AsvExplainer {
     pub fn new(dag: Dag) -> Self {
-        Self { dag }
+        let n = dag.node_count();
+        let parents_mask = if n <= 63 {
+            (0..n)
+                .map(|i| {
+                    dag.parents_raw(NodeId(i as u32))
+                        .iter()
+                        .fold(0u64, |m, &p| m | (1u64 << p.0))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        Self { dag, parents_mask }
     }
 
     /// Brute-force exact ASV: enumerates all topological orderings.
@@ -93,6 +112,8 @@ impl AsvExplainer {
             n_order_ideals: None,
             state_ratio: None,
             memory_mb: None,
+            fallback_from: None,
+            fallback_reason: None,
         })
     }
 
@@ -129,7 +150,7 @@ impl AsvExplainer {
         F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
     {
         self.dag.validate()?;
-        dag_exact_asv(&self.dag, value_fn)
+        dag_exact_asv(&self.dag, value_fn, &self.parents_mask)
     }
 
     /// Exact ASV for general DAGs using sparse order-ideal DP.
@@ -157,7 +178,8 @@ impl AsvExplainer {
         F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
     {
         self.dag.validate()?;
-        let (result, _, _, _) = dag_exact_asv_sparse(&self.dag, value_fn, config)?;
+        let (result, _, _, _) =
+            dag_exact_asv_sparse(&self.dag, value_fn, config, &self.parents_mask)?;
         Ok(result)
     }
 
@@ -189,8 +211,12 @@ impl AsvExplainer {
             // fall back to approximate if sparse DP hits the memory or overflow limit.
             match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default()) {
                 Ok(r) => Ok(r),
-                Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
-                    self.approximate(value_fn, config)
+                Err(CausasvError::InvalidConfig(ref msg))
+                | Err(CausasvError::Overflow(ref msg)) => {
+                    let mut r = self.approximate(value_fn, config)?;
+                    r.fallback_from = Some("exact_dag_sparse".to_string());
+                    r.fallback_reason = Some(msg.clone());
+                    Ok(r)
                 }
                 Err(e) => Err(e),
             }
