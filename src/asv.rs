@@ -167,12 +167,11 @@ impl AsvExplainer {
     /// - n ≤ 8: `exact` — brute-force, lowest overhead for small n
     /// - n > 8, rooted directed tree: `exact_tree` — order-ideal DP
     /// - 8 < n ≤ 20: `exact_dag` — dense order-ideal DP (O(2^n × n))
-    /// - 20 < n ≤ 28: `exact_dag_sparse` — sparse BFS over order ideals
+    /// - 20 < n ≤ 28: `exact_dag_sparse` — sparse BFS over order ideals;
+    ///   falls back to `approximate` on memory-limit or overflow errors
     /// - n > 28: `approximate` — IS-weighted sampling
     ///
     /// `config` is used only when the approximate path is taken.
-    /// For 20 < n ≤ 28, `exact_dag_sparse` may return `Err` if the memory
-    /// limit is exceeded — call `approximate` explicitly in that case.
     pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
     where
         F: Fn(&[NodeId]) -> Result<f64, CausasvError> + Send + Sync,
@@ -186,7 +185,15 @@ impl AsvExplainer {
         } else if n <= 20 {
             self.exact_dag(value_fn)
         } else if n <= 28 {
-            self.exact_dag_sparse(value_fn)
+            // Use a closure to borrow value_fn without consuming it, so we can
+            // fall back to approximate if sparse DP hits the memory or overflow limit.
+            match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default()) {
+                Ok(r) => Ok(r),
+                Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
+                    self.approximate(value_fn, config)
+                }
+                Err(e) => Err(e),
+            }
         } else {
             self.approximate(value_fn, config)
         }
