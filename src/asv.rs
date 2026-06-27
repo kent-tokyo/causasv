@@ -6,6 +6,7 @@ use crate::approx::{
 };
 use crate::cache::value_cached;
 use crate::dag_dp::dag_exact_asv;
+use crate::dag_dp_sparse::{ExactDagConfig, dag_exact_asv_sparse};
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
@@ -31,6 +32,12 @@ pub struct AsvResult {
     pub converged: Option<bool>,
     /// Per-node IS standard error estimates. None for exact and non-adaptive approx.
     pub stderr: Option<BTreeMap<NodeId, f64>>,
+    /// Number of order ideals visited by exact_dag_sparse. None for other methods.
+    pub n_order_ideals: Option<usize>,
+    /// Fraction of 2^n states visited: n_order_ideals / 2^n. None for other methods.
+    pub state_ratio: Option<f64>,
+    /// Estimated memory used by sparse DP in MB. None for other methods.
+    pub memory_mb: Option<f64>,
 }
 
 /// Entry point for ASV computation over a causal DAG.
@@ -83,6 +90,9 @@ impl AsvExplainer {
             effective_sample_size: None,
             converged: None,
             stderr: None,
+            n_order_ideals: None,
+            state_ratio: None,
+            memory_mb: None,
         })
     }
 
@@ -122,15 +132,47 @@ impl AsvExplainer {
         dag_exact_asv(&self.dag, value_fn)
     }
 
+    /// Exact ASV for general DAGs using sparse order-ideal DP.
+    ///
+    /// BFS-enumerates only valid order ideals — sets S where all parents of every
+    /// i ∈ S are also in S. For sparse DAGs the number of valid order ideals can be
+    /// far less than 2^n, enabling exact computation for n > 20.
+    ///
+    /// Uses the default `ExactDagConfig` (max_nodes=28, memory_limit_bytes=2GiB).
+    /// Returns `Err` if n > max_nodes or if the memory limit is exceeded mid-BFS.
+    pub fn exact_dag_sparse<F>(&self, value_fn: F) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        self.exact_dag_sparse_with_config(value_fn, &ExactDagConfig::default())
+    }
+
+    /// Like `exact_dag_sparse` but with a custom `ExactDagConfig`.
+    pub fn exact_dag_sparse_with_config<F>(
+        &self,
+        value_fn: F,
+        config: &ExactDagConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        self.dag.validate()?;
+        let (result, _, _, _) = dag_exact_asv_sparse(&self.dag, value_fn, config)?;
+        Ok(result)
+    }
+
     /// Automatic method selection based on graph size and structure.
     ///
     /// Dispatch rules:
     /// - n ≤ 8: `exact` — brute-force, lowest overhead for small n
     /// - n > 8, rooted directed tree: `exact_tree` — order-ideal DP
-    /// - 8 < n ≤ 20: `exact_dag` — order-ideal DP for general DAGs
-    /// - otherwise: `approximate` — IS-weighted sampling
+    /// - 8 < n ≤ 20: `exact_dag` — dense order-ideal DP (O(2^n × n))
+    /// - 20 < n ≤ 28: `exact_dag_sparse` — sparse BFS over order ideals
+    /// - n > 28: `approximate` — IS-weighted sampling
     ///
     /// `config` is used only when the approximate path is taken.
+    /// For 20 < n ≤ 28, `exact_dag_sparse` may return `Err` if the memory
+    /// limit is exceeded — call `approximate` explicitly in that case.
     pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
     where
         F: Fn(&[NodeId]) -> Result<f64, CausasvError> + Send + Sync,
@@ -143,6 +185,8 @@ impl AsvExplainer {
             self.exact_tree(value_fn)
         } else if n <= 20 {
             self.exact_dag(value_fn)
+        } else if n <= 28 {
+            self.exact_dag_sparse(value_fn)
         } else {
             self.approximate(value_fn, config)
         }
