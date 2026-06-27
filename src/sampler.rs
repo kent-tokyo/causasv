@@ -8,6 +8,10 @@ use crate::graph::{Dag, NodeId};
 pub struct SamplingConfig {
     pub n_samples: usize,
     pub seed: Option<u64>,
+    /// When set, enables batched value-function evaluation: collect this many samples,
+    /// deduplicate coalitions, call `value_fn_batch` once, then process IS weights.
+    /// Reduces Python GIL acquisition overhead for large models.
+    pub batch_size: Option<usize>,
 }
 
 impl SamplingConfig {
@@ -15,11 +19,17 @@ impl SamplingConfig {
         Self {
             n_samples,
             seed: None,
+            batch_size: None,
         }
     }
 
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
+        self
+    }
+
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = Some(batch_size);
         self
     }
 }

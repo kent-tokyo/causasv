@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::approx::{approximate_asv, approximate_asv_adaptive};
+use crate::approx::{
+    approximate_asv, approximate_asv_adaptive, approximate_asv_adaptive_batched,
+    approximate_asv_batched,
+};
 use crate::cache::value_cached;
 use crate::dag_dp::dag_exact_asv;
 use crate::error::CausasvError;
@@ -161,5 +164,38 @@ impl AsvExplainer {
     {
         self.dag.validate()?;
         approximate_asv_adaptive(&self.dag, value_fn, config)
+    }
+
+    /// Batched approximate ASV: like `approximate`, but evaluates coalitions in batches
+    /// via `value_fn_batch(coalitions) -> values` to reduce per-call overhead (e.g. Python GIL).
+    ///
+    /// Set `config.batch_size` to control how many samples to collect per batch call.
+    /// With `batch_size=1`, results are identical to `approximate` for the same seed.
+    pub fn approximate_batched<F>(
+        &self,
+        value_fn_batch: F,
+        config: SamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError>,
+    {
+        self.dag.validate()?;
+        approximate_asv_batched(&self.dag, value_fn_batch, config)
+    }
+
+    /// Adaptive batched approximate ASV: like `approximate_adaptive`, but evaluates
+    /// coalitions in batches via `value_fn_batch`.
+    ///
+    /// Each sampling batch (of `config.batch_size` samples) becomes one `value_fn_batch` call.
+    pub fn approximate_adaptive_batched<F>(
+        &self,
+        value_fn_batch: F,
+        config: AdaptiveSamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError>,
+    {
+        self.dag.validate()?;
+        approximate_asv_adaptive_batched(&self.dag, value_fn_batch, config)
     }
 }
