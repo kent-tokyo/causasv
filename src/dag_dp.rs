@@ -51,13 +51,18 @@ where
             continue;
         }
         let mask64 = mask as u64;
-        for i in 0..n {
+        for (i, &pmask) in parents_mask.iter().enumerate() {
             if mask64 & (1 << i) != 0 {
                 continue; // already placed
             }
-            if parents_mask[i] & mask64 == parents_mask[i] {
+            if pmask & mask64 == pmask {
                 // all parents of i are in mask → i can be placed next
-                dp_fwd[mask | (1 << i)] += dp_fwd[mask];
+                let next = mask | (1 << i);
+                dp_fwd[next] = dp_fwd[next].checked_add(dp_fwd[mask]).ok_or_else(|| {
+                    CausasvError::Overflow(format!(
+                        "dp_fwd[{mask:#b}] overflowed u64 — use approx for this DAG"
+                    ))
+                })?;
             }
         }
     }
@@ -68,13 +73,18 @@ where
     dp_ind[0] = 1;
     for mask in 1..total_masks {
         let mask64 = mask as u64;
-        for i in 0..n {
+        for (i, &pmask) in parents_mask.iter().enumerate() {
             if mask64 & (1u64 << i) == 0 {
                 continue; // i not in mask
             }
-            if parents_mask[i] & mask64 == 0 {
+            if pmask & mask64 == 0 {
                 // i has no parent in mask → source in G[mask]
-                dp_ind[mask] += dp_ind[mask ^ (1usize << i)];
+                let prev = dp_ind[mask ^ (1usize << i)];
+                dp_ind[mask] = dp_ind[mask].checked_add(prev).ok_or_else(|| {
+                    CausasvError::Overflow(format!(
+                        "dp_ind[{mask:#b}] overflowed u64 — use approx for this DAG"
+                    ))
+                })?;
             }
         }
     }
