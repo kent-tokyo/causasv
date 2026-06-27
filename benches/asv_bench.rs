@@ -183,6 +183,44 @@ fn bench_exact_dag_chain_16(c: &mut Criterion) {
     });
 }
 
+// ── exact_dag_sparse ─────────────────────────────────────────────────────────
+
+fn bench_exact_dag_sparse_chain_24(c: &mut Criterion) {
+    // Chain n=24: beyond exact_dag limit (n>20). Sparse visits only 25 order ideals
+    // vs 2^24=16M for dense. Shows the sparsity benefit on a maximally-sparse DAG.
+    let dag = make_chain(24);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("exact_dag_sparse_chain_24", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag_sparse(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+}
+
+fn bench_exact_dag_vs_sparse_two_chains_20(c: &mut Criterion) {
+    // Two parallel chains n=20: dense visits 2^20=1M states, sparse visits (10+1)^2=121.
+    let dag = make_two_parallel_chains(10); // n = 20
+    let explainer = AsvExplainer::new(dag);
+    let mut group = c.benchmark_group("exact_dag_vs_sparse_two_chains_20");
+    group.bench_function("dense", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+    group.bench_function("sparse", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag_sparse(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+    group.finish();
+}
+
 // ── approximate ─────────────────────────────────────────────────────────────
 
 fn bench_approx_chain_10(c: &mut Criterion) {
@@ -215,6 +253,92 @@ fn bench_approx_tree(c: &mut Criterion) {
     });
 }
 
+// ── approx: normal vs batched ────────────────────────────────────────────────
+
+fn bench_approx_vs_batched_chain_10(c: &mut Criterion) {
+    // Batched deduplicates coalitions and evaluates each mask at most once.
+    // In pure Rust the gain is moderate; Python users see much larger speedup
+    // because batch_size controls how often the GIL is reacquired.
+    let dag = make_chain(10);
+    let explainer = AsvExplainer::new(dag);
+    let mut group = c.benchmark_group("approx_vs_batched_chain_10_1k");
+    group.bench_function("normal", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(1_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+    group.bench_function("batched_b256", |b| {
+        b.iter(|| {
+            explainer
+                .approximate_batched(
+                    |coalitions| {
+                        Ok(coalitions
+                            .iter()
+                            .map(|c| black_box(c.len() as f64))
+                            .collect())
+                    },
+                    SamplingConfig::new(1_000)
+                        .with_seed(42)
+                        .with_batch_size(256),
+                )
+                .unwrap()
+        });
+    });
+    group.finish();
+}
+
+// ── approx: seeded parallel ──────────────────────────────────────────────────
+
+fn bench_approx_parallel_chain_20(c: &mut Criterion) {
+    // Seeded parallel: deterministic per-worker seeds via splitmix64.
+    // same seed + same num_threads → bitwise-identical results.
+    let dag = make_chain(20);
+    let explainer = AsvExplainer::new(dag);
+    let mut group = c.benchmark_group("approx_chain_20_10k_parallel");
+    group.bench_function("serial_seeded", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+    group.bench_function("parallel_2t", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000)
+                        .with_seed(42)
+                        .with_parallel(true)
+                        .with_num_threads(2),
+                )
+                .unwrap()
+        });
+    });
+    group.bench_function("parallel_4t", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000)
+                        .with_seed(42)
+                        .with_parallel(true)
+                        .with_num_threads(4),
+                )
+                .unwrap()
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_exact_chain_7,
@@ -226,7 +350,11 @@ criterion_group!(
     bench_exact_dag_two_chains_12,
     bench_exact_dag_diamond_10,
     bench_exact_dag_chain_16,
+    bench_exact_dag_sparse_chain_24,
+    bench_exact_dag_vs_sparse_two_chains_20,
     bench_approx_chain_10,
     bench_approx_tree,
+    bench_approx_vs_batched_chain_10,
+    bench_approx_parallel_chain_20,
 );
 criterion_main!(benches);

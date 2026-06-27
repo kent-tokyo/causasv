@@ -35,6 +35,7 @@ pub(crate) fn dag_exact_asv_sparse<F>(
     dag: &Dag,
     value_fn: F,
     config: &ExactDagConfig,
+    parents_mask: &[u64],
 ) -> Result<(AsvResult, usize, f64, f64), CausasvError>
 where
     F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
@@ -51,14 +52,6 @@ where
             "bitmask representation requires n ≤ 63 for sparse DP, got {n}"
         )));
     }
-
-    let parents_mask: Vec<u64> = (0..n)
-        .map(|i| {
-            dag.parents_raw(NodeId(i as u32))
-                .iter()
-                .fold(0u64, |m, &p| m | (1u64 << p.0))
-        })
-        .collect();
 
     let full_mask: u64 = (1u64 << n) - 1;
 
@@ -108,7 +101,7 @@ where
     // computed lazily with memoization. Needed for suffix weight computation.
     let mut dp_ind: HashMap<u64, u64> = HashMap::new();
 
-    let total = dp_ind_lazy(full_mask, &parents_mask, n, &mut dp_ind)? as f64;
+    let total = dp_ind_lazy(full_mask, parents_mask, n, &mut dp_ind)? as f64;
 
     // Accumulate ASV weights
     let mut phi = vec![0.0f64; n];
@@ -128,7 +121,7 @@ where
             }
             // suffix = V \ (S ∪ {i})
             let suffix_mask = full_mask ^ (s | (1u64 << i));
-            let w_suffix = dp_ind_lazy(suffix_mask, &parents_mask, n, &mut dp_ind)? as f64;
+            let w_suffix = dp_ind_lazy(suffix_mask, parents_mask, n, &mut dp_ind)? as f64;
             let s_with_i = s | (1u64 << i);
             phi[i] += w_prefix
                 * w_suffix
@@ -153,6 +146,8 @@ where
         n_order_ideals: Some(n_order_ideals),
         state_ratio: Some(state_ratio),
         memory_mb: Some(memory_mb),
+        fallback_from: None,
+        fallback_reason: None,
     };
 
     Ok((result, n_order_ideals, state_ratio, memory_mb))

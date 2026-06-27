@@ -240,5 +240,7 @@ where
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
     })
 }

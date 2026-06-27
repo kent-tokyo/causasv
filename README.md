@@ -111,6 +111,96 @@ print(info["is_exact"])   # bool
 print(info["method"])     # str — the method name passed in (e.g. "approx")
 ```
 
+Use `explain_adaptive()` for automatic convergence detection and per-feature confidence intervals:
+
+```python
+info = explainer.explain_adaptive(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    min_samples=1_000,
+    max_samples=100_000,
+    batch_size=1_000,
+    seed=42,
+    ci=0.95,          # optional: add ci_low / ci_high to result
+)
+print(info["values"])     # dict[str, float]
+print(info["stderr"])     # dict[str, float] — IS standard error per feature
+print(info["ci_low"])     # dict[str, float] — lower bound of 95% confidence interval
+print(info["ci_high"])    # dict[str, float] — upper bound of 95% confidence interval
+print(info["converged"])  # bool — True if rel_tol was reached before max_samples
+print(info["ess_ratio"])  # float — ESS / n_samples; close to 1 is good
+```
+
+For batched coalitions (reduced Python GIL overhead for large models), pass `value_fn_batch` or call `explain_adaptive_batch()`:
+
+```python
+# value_fn_batch receives list[list[str]] and must return list[float]
+info = explainer.explain_with_diagnostics(
+    value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
+    method="approx",
+    n_samples=50_000,
+    batch_size=512,
+    seed=42,
+)
+
+# Adaptive variant with batched evaluation
+info = explainer.explain_adaptive_batch(
+    value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
+    min_samples=1_000,
+    max_samples=100_000,
+    batch_size=1_000,
+    seed=42,
+)
+```
+
+For deterministic parallel approximation, pass `parallel=True` with a `seed`:
+
+```python
+info = explainer.explain_with_diagnostics(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    method="approx",
+    n_samples=100_000,
+    seed=42,
+    parallel=True,
+    num_threads=4,   # None = rayon default
+)
+print(info["deterministic"])  # True when seed + parallel
+```
+
+Use `explain_stability()` to verify that approximate rankings are consistent across seeds:
+
+```python
+from causasv import explain_stability
+
+result = explain_stability(
+    explainer,
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    seeds=[1, 2, 3, 4, 5],
+    method="approx",
+    n_samples=10_000,
+)
+print(result["rank_stability"])   # mean pairwise Kendall tau; 1.0 = perfectly stable
+print(result["std_values"])       # dict[str, float] — small means stable estimates
+print(result["mean_values"])      # dict[str, float] — mean ASV across seeds
+```
+
+Use `ASVEnsembleExplainer` to measure sensitivity across multiple candidate DAGs:
+
+```python
+from causasv import CausalDAG, ASVEnsembleExplainer
+
+dag1 = CausalDAG.from_edges([("A", "B"), ("B", "C")])
+dag2 = CausalDAG.from_edges([("A", "B"), ("A", "C")])
+ensemble = ASVEnsembleExplainer([dag1, dag2])
+result = ensemble.explain_with_sensitivity(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    method="auto",
+)
+print(result["mean_values"])     # dict[str, float] — mean ASV across DAGs
+print(result["std_values"])      # dict[str, float] — std across DAGs; 0 = DAG-invariant
+print(result["rank_stability"])  # float — mean pairwise Kendall tau across DAG pairs
+print(result["per_dag_values"])  # list[dict[str, float]] — one dict per DAG
+```
+
 Inspect and export the DAG:
 
 ```python
@@ -232,29 +322,22 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 
 ## Performance
 
-Benchmarks on Apple M-series (arm64, release build). `v(S) = |S|` (additive value function).
+Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [docs/benchmarks.md](docs/benchmarks.md) for full tables.
 
-| Benchmark | n | L(T) | Method | Time |
-|-----------|---|-------|--------|------|
-| Balanced binary tree | 7 | 80 | `exact` (enumerate) | ~70 µs |
-| Balanced binary tree | 7 | 80 | `exact_tree` (DP) | ~145 µs |
-| Balanced binary tree | 15 | ~22 M | `exact` | — (infeasible) |
-| Balanced binary tree | 15 | ~22 M | `exact_tree` (DP) | ~7.8 ms |
-| Caterpillar tree | 10 | 945 | `exact_tree` (DP) | ~347 µs |
-| Chain | 10 | — | `exact_dag` (DP) | ~29 µs |
-| Two parallel chains | 12 | — | `exact_dag` (DP) | ~197 µs |
-| Diamond DAG | 10 | — | `exact_dag` (DP) | ~141 µs |
-| Chain | 16 | — | `exact_dag` (DP) | ~4.9 ms |
-| Approximate (chain) | 10 | — | `approx` (1k samples) | ~2.9 ms |
+| DAG | n | Method | Time |
+|-----|---|--------|------|
+| Chain | 7 | `exact` (brute-force) | 2.7 µs |
+| Balanced tree | 15 | `exact_tree` (DP) | 2.8 ms |
+| Caterpillar | 10 | `exact_tree` (DP) | 170 µs |
+| Chain | 16 | `exact_dag` (dense DP) | 5.3 ms |
+| Chain | 24 | `exact_dag_sparse` | 15 µs |
+| Two parallel chains | 20 | `exact_dag` (dense, 1M states) | **87.9 ms** |
+| Two parallel chains | 20 | `exact_dag_sparse` (121 states) | **91 µs** (~1000×) |
+| Chain | 10 | `approx` (1k samples) | 916 µs |
+| Chain | 20 | `approx` serial seeded (10k) | 18.2 ms |
+| Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
 
-> Exact enumeration would require visiting ~22 million valid causal orderings for n=15;
-> `exact_tree` computes the same ASV in milliseconds via order-ideal DP.
-> `exact_dag` handles arbitrary DAGs of the same size via 2^n bitmask DP.
-
-Note: for n ≤ ~8, `exact` is often faster than `exact_tree` due to lower allocator overhead.
-`exact_tree` becomes the only feasible exact method for larger trees; `exact_dag` covers
-non-tree DAGs of the same scale.
-Run with `cargo bench` to reproduce.
+Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
 
 ## Current limitations
 

@@ -565,6 +565,8 @@ impl PyASVExplainer {
         d.set_item("n_order_ideals", result.n_order_ideals)?;
         d.set_item("state_ratio", result.state_ratio)?;
         d.set_item("memory_mb", result.memory_mb)?;
+        d.set_item("fallback_from", result.fallback_from.as_deref())?;
+        d.set_item("fallback_reason", result.fallback_reason.as_deref())?;
         Ok(d)
     }
 

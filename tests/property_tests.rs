@@ -140,6 +140,80 @@ proptest! {
     }
 }
 
+// ── exact_dag_sparse == exact_dag consistency ────────────────────────────────
+
+proptest! {
+    /// For n ≤ 8 DAGs, sparse BFS order-ideal DP must agree with dense DP.
+    #[test]
+    fn prop_exact_dag_sparse_matches_exact_dag(dag in arb_dag(8)) {
+        let explainer = AsvExplainer::new(dag);
+        let dense  = explainer.exact_dag(|c| Ok(c.len() as f64)).unwrap();
+        let sparse = explainer.exact_dag_sparse(|c| Ok(c.len() as f64)).unwrap();
+        for (id, &phi_d) in &dense.values {
+            let phi_s = sparse.values[id];
+            prop_assert!((phi_d - phi_s).abs() < 1e-9,
+                "exact_dag vs exact_dag_sparse mismatch on {id:?}: dense={phi_d}, sparse={phi_s}");
+        }
+    }
+}
+
+// ── Additivity axiom ──────────────────────────────────────────────────────────
+
+proptest! {
+    /// ASV(v₁ + v₂) = ASV(v₁) + ASV(v₂) for any two value functions.
+    /// Verified with v₁(S) = |S| and v₂(S) = |S|².
+    #[test]
+    fn prop_additivity(dag in arb_dag(7)) {
+        let explainer = AsvExplainer::new(dag);
+        let phi1 = explainer.exact_dag(|c| Ok(c.len() as f64)).unwrap();
+        let phi2 = explainer.exact_dag(|c| Ok((c.len() * c.len()) as f64)).unwrap();
+        let phi_sum = explainer
+            .exact_dag(|c| Ok(c.len() as f64 + (c.len() * c.len()) as f64))
+            .unwrap();
+        for (id, &v1) in &phi1.values {
+            let v2 = phi2.values[id];
+            let combined = phi_sum.values[id];
+            prop_assert!((combined - (v1 + v2)).abs() < 1e-9,
+                "additivity axiom violated on {id:?}: ASV(v1+v2)={combined}, ASV(v1)+ASV(v2)={}", v1 + v2);
+        }
+    }
+}
+
+// ── Relabeling invariance ─────────────────────────────────────────────────────
+
+proptest! {
+    /// ASV is relabeling-invariant: permuting node indices permutes ASV values.
+    ///
+    /// Uses the reversal permutation perm[i] = n-1-i: rebuild the DAG with edges
+    /// (perm[p] → perm[j]) for each original edge (p → j), then verify that
+    /// phi_original[i] == phi_relabeled[perm[i]] for all i.
+    #[test]
+    fn prop_relabeling_invariance(dag in arb_dag(6)) {
+        let n = dag.node_count();
+        let mut dag2 = Dag::new();
+        for i in (0..n).rev() {
+            dag2.add_node(&format!("n{i}"));
+        }
+        for j in 0..n as u32 {
+            for &p in dag.parents_raw(NodeId(j)) {
+                let new_p = NodeId((n as u32 - 1) - p.0);
+                let new_j = NodeId((n as u32 - 1) - j);
+                let _ = dag2.add_edge(new_p, new_j);
+            }
+        }
+        let phi1 = AsvExplainer::new(dag).exact_dag(|c| Ok(c.len() as f64)).unwrap();
+        let phi2 = AsvExplainer::new(dag2).exact_dag(|c| Ok(c.len() as f64)).unwrap();
+        for i in 0..n as u32 {
+            let perm_i = (n as u32 - 1) - i;
+            prop_assert!(
+                (phi1.values[&NodeId(i)] - phi2.values[&NodeId(perm_i)]).abs() < 1e-9,
+                "relabeling invariance violated: phi1[{i}]={}, phi2[{}]={}",
+                phi1.values[&NodeId(i)], perm_i, phi2.values[&NodeId(perm_i)]
+            );
+        }
+    }
+}
+
 // ── Approximate efficiency ────────────────────────────────────────────────────
 
 proptest! {
