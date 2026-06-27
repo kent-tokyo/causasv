@@ -163,10 +163,13 @@ values = ASVExplainer(dag).explain(value_fn, method="auto")
 |--------|-------------|-----|
 | `exact` | Small DAGs (n ≤ ~8); enumerates all linear extensions | `explainer.exact(value_fn)` |
 | `exact_tree` | Rooted directed trees; order-ideal DP | `explainer.exact_tree(value_fn)` |
-| `exact_dag` | General DAGs, n ≤ 20; order-ideal DP | `explainer.exact_dag(value_fn)` |
-| `approx` | Any DAG (n > 20); importance-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
+| `exact_dag` | General DAGs, n ≤ 20; dense order-ideal DP | `explainer.exact_dag(value_fn)` |
+| `exact_dag_sparse` | Sparse DAGs, n ≤ 28; BFS over valid order ideals only | `explainer.exact_dag_sparse(value_fn)` |
+| `approx` | Any DAG (n > 28 or memory limit exceeded); IS sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag`; else → `approx`.
+`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; else → `approx`.
+
+`exact_dag_sparse` visits only valid order ideals (sets where every node's parents are also present). For sparse DAGs (chains, trees, few branching points), this can be orders of magnitude fewer states than 2^n. Returns `n_order_ideals`, `state_ratio`, and `memory_mb` diagnostics.
 
 The approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results.
 
@@ -174,7 +177,7 @@ The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_s
 
 ## Status
 
-Experimental — v0.6.0. Public API may change before v1.0.
+Experimental — v0.7.0. Public API may change before v1.0.
 
 ## Algorithm status
 
@@ -183,6 +186,7 @@ Experimental — v0.6.0. Public API may change before v1.0.
 | `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
 | `exact_tree` | Rooted tree validation + order-ideal DP | Efficient for trees; hook-length formula |
 | `exact_dag` | Order-ideal DP over 2^n states | General DAGs, n ≤ 20; O(2^n × n) |
+| `exact_dag_sparse` | BFS over valid order ideals + lazy dp_ind | Sparse DAGs, n ≤ 28; memory-bounded |
 | `approx` | Self-normalized IS over topological orderings | Any DAG; corrects frontier-sampler bias |
 
 The brute-force `exact` implementation is used as the reference oracle in tests for all other methods.
@@ -198,10 +202,15 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | Exact ASV (brute-force) | ✓ | ✓ | Stable |
 | Rooted-tree exact DP | ✓ | ✓ | Experimental |
 | General DAG exact DP (n ≤ 20) | ✓ | ✓ | Experimental |
+| Sparse exact DAG DP (n ≤ 28) | ✓ | ✓ | Experimental |
 | Approximate ASV with ESS | ✓ | ✓ | Experimental |
-| Adaptive approximation | ✓ | ✓ | Experimental |
-| sklearn / NumPy helper | — | ✓ | Experimental |
-| Graph export (DOT / networkx) | planned | ✓ | Experimental |
+| Adaptive approximation + CI | ✓ | ✓ | Experimental |
+| Seeded deterministic parallel approx | ✓ | ✓ | Experimental |
+| Batched coalition evaluation | ✓ | ✓ | Experimental |
+| sklearn / NumPy helper (TabularExplainer) | — | ✓ | Experimental |
+| DAG ensemble / sensitivity ASV | — | ✓ | Experimental |
+| DAG structural inspection | — | ✓ | Experimental |
+| Graph export (DOT / JSON / networkx) | — | ✓ | Experimental |
 
 ## Paper correspondence
 
@@ -213,7 +222,7 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | Rooted tree exact algorithm | ✓ `exact_tree` (order-ideal DP + hook-length formula) |
 | General DAG exact DP | ✓ `exact_dag` (order-ideal DP, n ≤ 20) |
 | Importance-sampling approximation for general DAGs | ✓ `approx` |
-| Sparse/memory-limited exact DAG DP | planned (`exact_dag_sparse`, n > 20) |
+| Sparse exact DAG DP | ✓ `exact_dag_sparse` (BFS over order ideals, n ≤ 28) |
 | Causal discovery | — out of scope |
 
 - `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
@@ -250,7 +259,7 @@ Run with `cargo bench` to reproduce.
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
-- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs with n ≤ 20, use `exact_dag`. For larger DAGs, use `approx`.
+- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, use `approx`.
 - Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
 - No built-in causal discovery, model training, or automatic graph construction.
 
