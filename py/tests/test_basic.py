@@ -284,6 +284,61 @@ def test_dag_topological_layers():
     assert layers2[2] == ["d"]
 
 
+def test_dag_inspect_keys():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    info = dag.inspect()
+    expected = {
+        "n_nodes", "n_edges", "is_dag", "is_rooted_tree",
+        "n_roots", "n_leaves", "max_depth", "recommended_method", "estimated_dense_states",
+    }
+    assert expected == set(info.keys())
+
+
+def test_dag_inspect_chain():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    info = dag.inspect()
+    assert info["n_nodes"] == 3
+    assert info["n_edges"] == 2
+    assert info["is_dag"] is True
+    assert info["is_rooted_tree"] is True
+    assert info["n_roots"] == 1
+    assert info["n_leaves"] == 1
+    assert info["max_depth"] == 2
+    assert info["recommended_method"] == "exact"
+    assert info["estimated_dense_states"] == 8  # 2^3
+
+
+def test_dag_inspect_diamond():
+    # a->b, a->c, b->d, c->d
+    dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    info = dag.inspect()
+    assert info["n_nodes"] == 4
+    assert info["n_edges"] == 4
+    assert info["is_rooted_tree"] is False
+    assert info["n_roots"] == 1
+    assert info["n_leaves"] == 1
+    assert info["max_depth"] == 2
+
+
+def test_dag_inspect_recommended_method():
+    # Large chain (n=25) is a rooted tree → exact_tree
+    edges = [(f"n{i}", f"n{i+1}") for i in range(24)]
+    dag = CausalDAG.from_edges(edges)
+    info = dag.inspect()
+    assert info["n_nodes"] == 25
+    assert info["is_rooted_tree"] is True
+    assert info["recommended_method"] == "exact_tree"
+    assert info["estimated_dense_states"] == 2 ** 25
+
+
+def test_dag_inspect_dense_states_none_for_large():
+    # n=64 → estimated_dense_states should be None (overflow guard)
+    edges = [(f"n{i}", f"n{i+1}") for i in range(63)]
+    dag = CausalDAG.from_edges(edges)
+    info = dag.inspect()
+    assert info["estimated_dense_states"] is None
+
+
 def test_explain_adaptive_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
@@ -310,6 +365,51 @@ def test_explain_adaptive_keys():
     assert info["is_exact"] is False
     assert isinstance(info["converged"], bool)
     assert isinstance(info["stderr"], dict)
+
+
+def test_explain_adaptive_ci_keys():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_adaptive(
+        lambda n: float(len(n)), min_samples=500, max_samples=5_000, seed=1, ci=0.95
+    )
+    assert "ci_low" in info and "ci_high" in info and "ci" in info
+    assert info["ci"] == 0.95
+    for k in info["values"]:
+        assert info["ci_low"][k] <= info["values"][k] <= info["ci_high"][k], (
+            f"CI violation on {k}: [{info['ci_low'][k]:.4f}, {info['ci_high'][k]:.4f}]"
+            f" does not contain {info['values'][k]:.4f}"
+        )
+
+
+def test_explain_adaptive_ci_width():
+    """Wider CI level → wider interval."""
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+    fn = lambda n: float(len(n))
+    info_90 = explainer.explain_adaptive(fn, min_samples=1_000, max_samples=5_000, seed=2, ci=0.90)
+    info_99 = explainer.explain_adaptive(fn, min_samples=1_000, max_samples=5_000, seed=2, ci=0.99)
+    for k in info_90["values"]:
+        width_90 = info_90["ci_high"][k] - info_90["ci_low"][k]
+        width_99 = info_99["ci_high"][k] - info_99["ci_low"][k]
+        assert width_99 >= width_90, f"99% CI should be wider than 90% CI on {k}"
+
+
+def test_explain_adaptive_ci_no_ci():
+    """Without ci=, ci_low/ci_high/ci are absent from the result."""
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_adaptive(lambda n: float(len(n)), min_samples=100, max_samples=500, seed=0)
+    assert "ci_low" not in info
+    assert "ci_high" not in info
+    assert "ci" not in info
+
+
+def test_explain_adaptive_ci_invalid():
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    with pytest.raises(Exception):
+        explainer.explain_adaptive(lambda n: float(len(n)), ci=1.5)
 
 
 def test_explain_adaptive_converges():
@@ -384,7 +484,6 @@ def test_make_tabular_value_fn():
 
 
 # ---------------------------------------------------------------------------
-<<<<<<< HEAD
 # value_fn_batch tests
 # ---------------------------------------------------------------------------
 
@@ -497,7 +596,9 @@ def test_unseeded_parallel_no_determinism_flag():
     )
     assert info["parallel"] is False
     assert info["deterministic"] is False
-=======
+
+
+# ---------------------------------------------------------------------------
 # exact_dag_sparse tests
 # ---------------------------------------------------------------------------
 
@@ -535,4 +636,3 @@ def test_exact_dag_sparse_chain_large():
     # Chain has one ordering; all values should be 1.0
     for v in result.values():
         assert abs(v - 1.0) < 1e-9
->>>>>>> feat/exact-dag-sparse
