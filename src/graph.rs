@@ -11,7 +11,7 @@ impl std::fmt::Display for NodeId {
 }
 
 /// Directed acyclic graph with stable node indexing.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Dag {
     // ponytail: IndexMap only here for name→id lookup with insertion-order iteration
     name_to_id: IndexMap<String, NodeId>,
