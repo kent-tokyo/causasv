@@ -105,6 +105,78 @@ impl PyCausalDAG {
     fn validate(&self) -> PyResult<()> {
         self.inner.validate().map_err(py_err)
     }
+
+    /// Return a structural summary of the DAG.
+    ///
+    /// Keys:
+    ///   - `"n_nodes"`: int
+    ///   - `"n_edges"`: int
+    ///   - `"is_dag"`: bool — always True for a validated graph
+    ///   - `"is_rooted_tree"`: bool — single root, all others have in-degree 1
+    ///   - `"n_roots"`: int — nodes with in-degree 0
+    ///   - `"n_leaves"`: int — nodes with out-degree 0
+    ///   - `"max_depth"`: int — length of longest root-to-leaf path
+    ///   - `"recommended_method"`: str — which AsvExplainer method auto() would pick
+    ///   - `"estimated_dense_states"`: int | None — 2^n_nodes; None if n > 63
+    fn inspect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let n = self.inner.node_count();
+        let in_deg = self.inner.in_degrees();
+        let n_roots = in_deg.iter().filter(|&&d| d == 0).count();
+        let n_edges: usize = self
+            .inner
+            .all_nodes()
+            .map(|id| self.inner.children_raw(id).len())
+            .sum();
+        let n_leaves = self
+            .inner
+            .all_nodes()
+            .filter(|&id| self.inner.children_raw(id).is_empty())
+            .count();
+        // max_depth = number of topological layers - 1
+        let max_depth = {
+            let mut remaining_in = in_deg.clone();
+            let mut depth = 0usize;
+            let mut remaining: Vec<bool> = vec![true; n];
+            loop {
+                let layer: Vec<usize> = (0..n)
+                    .filter(|&i| remaining[i] && remaining_in[i] == 0)
+                    .collect();
+                if layer.is_empty() {
+                    break;
+                }
+                depth += 1;
+                for &i in &layer {
+                    remaining[i] = false;
+                    for &child in self.inner.children_raw(crate::graph::NodeId(i as u32)) {
+                        remaining_in[child.0 as usize] -= 1;
+                    }
+                }
+            }
+            depth.saturating_sub(1)
+        };
+        let is_rooted_tree = crate::tree::find_rooted_tree_root(&self.inner).is_ok();
+        let recommended = if n <= 8 {
+            "exact"
+        } else if is_rooted_tree {
+            "exact_tree"
+        } else if n <= 20 {
+            "exact_dag"
+        } else {
+            "approx"
+        };
+        let dense_states: Option<u64> = if n <= 63 { Some(1u64 << n) } else { None };
+        let d = PyDict::new(py);
+        d.set_item("n_nodes", n)?;
+        d.set_item("n_edges", n_edges)?;
+        d.set_item("is_dag", true)?;
+        d.set_item("is_rooted_tree", is_rooted_tree)?;
+        d.set_item("n_roots", n_roots)?;
+        d.set_item("n_leaves", n_leaves)?;
+        d.set_item("max_depth", max_depth)?;
+        d.set_item("recommended_method", recommended)?;
+        d.set_item("estimated_dense_states", dense_states)?;
+        Ok(d)
+    }
 }
 
 #[pyclass(name = "ASVExplainer")]

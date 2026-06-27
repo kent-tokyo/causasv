@@ -222,6 +222,61 @@ def test_dag_to_dot():
     assert dot.strip().endswith("}")
 
 
+def test_dag_inspect_keys():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    info = dag.inspect()
+    expected = {
+        "n_nodes", "n_edges", "is_dag", "is_rooted_tree",
+        "n_roots", "n_leaves", "max_depth", "recommended_method", "estimated_dense_states",
+    }
+    assert expected == set(info.keys())
+
+
+def test_dag_inspect_chain():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    info = dag.inspect()
+    assert info["n_nodes"] == 3
+    assert info["n_edges"] == 2
+    assert info["is_dag"] is True
+    assert info["is_rooted_tree"] is True
+    assert info["n_roots"] == 1
+    assert info["n_leaves"] == 1
+    assert info["max_depth"] == 2
+    assert info["recommended_method"] == "exact"
+    assert info["estimated_dense_states"] == 8  # 2^3
+
+
+def test_dag_inspect_diamond():
+    # a->b, a->c, b->d, c->d
+    dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    info = dag.inspect()
+    assert info["n_nodes"] == 4
+    assert info["n_edges"] == 4
+    assert info["is_rooted_tree"] is False
+    assert info["n_roots"] == 1
+    assert info["n_leaves"] == 1
+    assert info["max_depth"] == 2
+
+
+def test_dag_inspect_recommended_method():
+    # Large chain (n=25) is a rooted tree → exact_tree
+    edges = [(f"n{i}", f"n{i+1}") for i in range(24)]
+    dag = CausalDAG.from_edges(edges)
+    info = dag.inspect()
+    assert info["n_nodes"] == 25
+    assert info["is_rooted_tree"] is True
+    assert info["recommended_method"] == "exact_tree"
+    assert info["estimated_dense_states"] == 2 ** 25
+
+
+def test_dag_inspect_dense_states_none_for_large():
+    # n=64 → estimated_dense_states should be None (overflow guard)
+    edges = [(f"n{i}", f"n{i+1}") for i in range(63)]
+    dag = CausalDAG.from_edges(edges)
+    info = dag.inspect()
+    assert info["estimated_dense_states"] is None
+
+
 def test_explain_adaptive_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
