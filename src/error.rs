@@ -18,4 +18,6 @@ pub enum CausasvError {
     ValueFunctionError(String),
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    #[error("linear extension count overflowed u64: {0}")]
+    Overflow(String),
 }
