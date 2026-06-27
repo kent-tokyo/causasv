@@ -26,8 +26,12 @@ def test_approx_reproducible():
     dag = CausalDAG()
     dag.add_edge("x", "y")
     explainer = ASVExplainer(dag)
-    v1 = explainer.explain(lambda n: float(len(n)), method="approx", n_samples=500, seed=42)
-    v2 = explainer.explain(lambda n: float(len(n)), method="approx", n_samples=500, seed=42)
+    v1 = explainer.explain(
+        lambda n: float(len(n)), method="approx", n_samples=500, seed=42
+    )
+    v2 = explainer.explain(
+        lambda n: float(len(n)), method="approx", n_samples=500, seed=42
+    )
     assert v1 == v2
 
 
@@ -103,10 +107,12 @@ def test_result_keys_are_node_names():
 
 
 def test_from_edges():
-    dag = CausalDAG.from_edges([
-        ("education", "income"),
-        ("income", "risk_score"),
-    ])
+    dag = CausalDAG.from_edges(
+        [
+            ("education", "income"),
+            ("income", "risk_score"),
+        ]
+    )
     explainer = ASVExplainer(dag)
     values = explainer.explain(lambda n: float(len(n)), method="exact")
     assert set(values.keys()) == {"education", "income", "risk_score"}
@@ -174,7 +180,15 @@ def test_explain_with_diagnostics_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
     info = explainer.explain_with_diagnostics(lambda n: float(len(n)), method="exact")
-    expected_keys = {"values", "ess", "ess_ratio", "n_samples", "seed", "is_exact", "method"}
+    expected_keys = {
+        "values",
+        "ess",
+        "ess_ratio",
+        "n_samples",
+        "seed",
+        "is_exact",
+        "method",
+    }
     assert expected_keys == set(info.keys())
 
 
@@ -224,6 +238,7 @@ def test_dag_to_dot():
 
 def test_dag_to_json():
     import json
+
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     data = json.loads(dag.to_json())
     assert set(data["nodes"]) == {"a", "b", "c"}
@@ -267,10 +282,23 @@ def test_explain_adaptive_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
     info = explainer.explain_adaptive(
-        lambda n: float(len(n)), min_samples=100, max_samples=500, batch_size=100, seed=0
+        lambda n: float(len(n)),
+        min_samples=100,
+        max_samples=500,
+        batch_size=100,
+        seed=0,
     )
-    expected = {"values", "ess", "ess_ratio", "n_samples", "seed", "is_exact",
-                "method", "converged", "stderr"}
+    expected = {
+        "values",
+        "ess",
+        "ess_ratio",
+        "n_samples",
+        "seed",
+        "is_exact",
+        "method",
+        "converged",
+        "stderr",
+    }
     assert expected == set(info.keys())
     assert info["method"] == "approx_adaptive"
     assert info["is_exact"] is False
@@ -284,7 +312,11 @@ def test_explain_adaptive_converges():
     explainer = ASVExplainer(dag)
     info = explainer.explain_adaptive(
         lambda n: float(len(n)),
-        min_samples=500, max_samples=10_000, batch_size=500, rel_tol=0.01, seed=42
+        min_samples=500,
+        max_samples=10_000,
+        batch_size=500,
+        rel_tol=0.01,
+        seed=42,
     )
     assert info["converged"] is True
     assert info["n_samples"] < 10_000
