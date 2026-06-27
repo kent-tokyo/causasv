@@ -52,6 +52,8 @@ pub struct AsvExplainer {
     // Bitmask of all DAG parents per node. Safe for n ≤ 63 (1u64 << p.0 is always in-range).
     // Empty for n > 63; exact_dag / exact_dag_sparse both error before using it.
     parents_mask: Vec<u64>,
+    // Cached once at construction; DAG is owned and immutable after new().
+    is_rooted_tree: bool,
 }
 
 impl AsvExplainer {
@@ -68,7 +70,12 @@ impl AsvExplainer {
         } else {
             vec![]
         };
-        Self { dag, parents_mask }
+        let is_rooted_tree = crate::tree::find_rooted_tree_root(&dag).is_ok();
+        Self {
+            dag,
+            parents_mask,
+            is_rooted_tree,
+        }
     }
 
     /// Brute-force exact ASV: enumerates all topological orderings.
@@ -207,7 +214,7 @@ impl AsvExplainer {
             let mut r = self.exact(value_fn)?;
             r.method_used = Some("exact");
             Ok(r)
-        } else if crate::tree::find_rooted_tree_root(&self.dag).is_ok() {
+        } else if self.is_rooted_tree {
             let mut r = self.exact_tree(value_fn)?;
             r.method_used = Some("exact_tree");
             Ok(r)
