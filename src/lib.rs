@@ -28,6 +28,7 @@
 mod approx;
 mod cache;
 mod dag_dp;
+mod dag_dp_sparse;
 mod error;
 mod graph;
 mod sampler;
@@ -41,6 +42,7 @@ pub mod asv;
 pub mod python;
 
 pub use asv::{AsvExplainer, AsvResult};
+pub use dag_dp_sparse::ExactDagConfig;
 pub use error::CausasvError;
 pub use graph::{Dag, NodeId};
 pub use sampler::{AdaptiveSamplingConfig, SamplingConfig};
