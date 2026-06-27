@@ -118,5 +118,8 @@ where
         effective_sample_size: None,
         converged: None,
         stderr: None,
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
     })
 }

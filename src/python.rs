@@ -149,9 +149,11 @@ impl PyASVExplainer {
             "exact" => self.inner.exact(rust_fn),
             "exact_tree" => self.inner.exact_tree(rust_fn),
             "exact_dag" => self.inner.exact_dag(rust_fn),
+            "exact_dag_sparse" => self.inner.exact_dag_sparse(rust_fn),
             _ => {
                 return Err(PyValueError::new_err(format!(
-                    "unknown method '{method}': use 'auto', 'approx', 'exact', 'exact_tree', or 'exact_dag'"
+                    "unknown method '{method}': use 'auto', 'approx', 'exact', 'exact_tree', \
+                     'exact_dag', or 'exact_dag_sparse'"
                 )));
             }
         }
@@ -229,6 +231,9 @@ impl PyASVExplainer {
         d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
         d.set_item("method", method)?;
+        d.set_item("n_order_ideals", result.n_order_ideals)?;
+        d.set_item("state_ratio", result.state_ratio)?;
+        d.set_item("memory_mb", result.memory_mb)?;
         Ok(d)
     }
 

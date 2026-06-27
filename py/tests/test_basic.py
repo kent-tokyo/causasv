@@ -174,7 +174,18 @@ def test_explain_with_diagnostics_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
     info = explainer.explain_with_diagnostics(lambda n: float(len(n)), method="exact")
-    expected_keys = {"values", "ess", "ess_ratio", "n_samples", "seed", "is_exact", "method"}
+    expected_keys = {
+        "values",
+        "ess",
+        "ess_ratio",
+        "n_samples",
+        "seed",
+        "is_exact",
+        "method",
+        "n_order_ideals",
+        "state_ratio",
+        "memory_mb",
+    }
     assert expected_keys == set(info.keys())
 
 
@@ -281,3 +292,43 @@ def test_make_tabular_value_fn():
 
     # Full coalition → x.sum()
     assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# exact_dag_sparse tests
+# ---------------------------------------------------------------------------
+
+
+def test_exact_dag_sparse_matches_exact_dag():
+    """Sparse DP must produce the same values as dense DP."""
+    dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    explainer = ASVExplainer(dag)
+    fn = lambda names: float(len(names))
+    dense = explainer.explain(fn, method="exact_dag")
+    sparse = explainer.explain(fn, method="exact_dag_sparse")
+    for k in dense:
+        assert abs(dense[k] - sparse[k]) < 1e-9, f"mismatch on {k}"
+
+
+def test_exact_dag_sparse_diagnostics():
+    dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    explainer = ASVExplainer(dag)
+    info = explainer.explain_with_diagnostics(
+        lambda n: float(len(n)), method="exact_dag_sparse"
+    )
+    assert info["is_exact"] is True
+    assert isinstance(info["n_order_ideals"], int) and info["n_order_ideals"] > 0
+    assert isinstance(info["state_ratio"], float) and 0 < info["state_ratio"] <= 1.0
+    assert isinstance(info["memory_mb"], float) and info["memory_mb"] > 0
+
+
+def test_exact_dag_sparse_chain_large():
+    """Chain DAG n=25 has only 26 order ideals — sparse should handle it easily."""
+    edges = [(f"n{i}", f"n{i+1}") for i in range(24)]
+    dag = CausalDAG.from_edges(edges)
+    explainer = ASVExplainer(dag)
+    fn = lambda names: float(len(names))
+    result = explainer.explain(fn, method="exact_dag_sparse")
+    # Chain has one ordering; all values should be 1.0
+    for v in result.values():
+        assert abs(v - 1.0) < 1e-9
