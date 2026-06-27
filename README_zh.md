@@ -1,13 +1,8 @@
 # causasv — 基于非对称 Shapley 值的因果特征归因
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
-[![CodeQL](https://img.shields.io/badge/CodeQL-enabled-blue.svg)](https://github.com/kent-tokyo/causasv/security/code-scanning)
-[![Security](https://github.com/kent-tokyo/causasv/actions/workflows/security.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/security.yml)
-<br>
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
-[![Downloads](https://img.shields.io/crates/d/causasv.svg)](https://crates.io/crates/causasv)
-[![GitHub release](https://img.shields.io/github/v/release/kent-tokyo/causasv)](https://github.com/kent-tokyo/causasv/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 <br>
 [![MSRV](https://img.shields.io/badge/MSRV-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
@@ -55,7 +50,6 @@ fn main() -> Result<(), causasv::CausasvError> {
     // 通过重要性加权拓扑排序采样计算近似 ASV
     let values = explainer.approximate(
         |coalition| {
-            // 用户提供的价值函数：给定特征联合返回分数
             Ok(coalition.len() as f64)
         },
         SamplingConfig::new(10_000).with_seed(42),
@@ -102,39 +96,128 @@ info = explainer.explain_with_diagnostics(
     n_samples=10_000,
     seed=42,
 )
+print(info["values"])          # dict[str, float]
+print(info["ess"])             # float — ESS ≈ n_samples 表示可靠
+print(info["ess_ratio"])       # float — ESS / n_samples，接近 1 为好
+print(info["method"])          # str — 输入的方法名
+print(info["selected_method"]) # str — auto() 实际选择的方法
+print(info["fallback_from"])   # str | None — 回退来源
+```
+
+使用 `explain_adaptive()` 进行自动收敛检测和逐特征置信区间：
+
+```python
+info = explainer.explain_adaptive(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    min_samples=1_000,
+    max_samples=100_000,
+    batch_size=1_000,
+    seed=42,
+    ci=0.95,          # 可选：添加 ci_low / ci_high
+)
 print(info["values"])     # dict[str, float]
-print(info["ess"])        # float — ESS ≈ n_samples 表示可靠；ESS ≪ n_samples 表示方差大
-print(info["ess_ratio"])  # float — ESS / n_samples，接近 1 为好
-print(info["n_samples"])  # int
-print(info["seed"])       # int | None
-print(info["is_exact"])   # bool
-print(info["method"])     # str
+print(info["stderr"])     # dict[str, float] — 每个特征的 IS 标准误差
+print(info["ci_low"])     # dict[str, float] — 95% 置信区间下界
+print(info["ci_high"])    # dict[str, float] — 95% 置信区间上界
+print(info["converged"])  # bool — 是否在 max_samples 前达到 rel_tol
+print(info["ess_ratio"])  # float — ESS / n_samples
+```
+
+批量联合评估（减少大型模型的 Python GIL 开销），使用 `value_fn_batch`：
+
+```python
+# value_fn_batch 接收 list[list[str]]，返回 list[float]
+info = explainer.explain_with_diagnostics(
+    value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
+    method="approx",
+    n_samples=50_000,
+    batch_size=512,
+    seed=42,
+)
+```
+
+确定性并行近似，同时传入 `seed` 和 `parallel=True`：
+
+```python
+info = explainer.explain_with_diagnostics(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    method="approx",
+    n_samples=100_000,
+    seed=42,
+    parallel=True,
+    num_threads=4,
+)
+print(info["deterministic"])  # True when seed + parallel
+```
+
+使用 `explain_stability()` 验证近似排名在不同种子下的一致性：
+
+```python
+from causasv import explain_stability
+
+result = explain_stability(
+    explainer,
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    seeds=[1, 2, 3, 4, 5],
+    method="approx",
+    n_samples=10_000,
+)
+print(result["rank_stability"])  # 平均 Kendall tau；1.0 = 完全稳定
+print(result["std_values"])      # dict[str, float] — 越小越稳定
+print(result["mean_values"])     # dict[str, float] — 种子间的平均 ASV
+```
+
+使用 `ASVEnsembleExplainer` 测量多个候选 DAG 间的敏感性：
+
+```python
+from causasv import CausalDAG, ASVEnsembleExplainer
+
+dag1 = CausalDAG.from_edges([("A", "B"), ("B", "C")])
+dag2 = CausalDAG.from_edges([("A", "B"), ("A", "C")])
+ensemble = ASVEnsembleExplainer([dag1, dag2])
+result = ensemble.explain_with_sensitivity(
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    method="auto",
+)
+print(result["mean_values"])     # dict[str, float] — DAG 间的平均 ASV
+print(result["std_values"])      # dict[str, float] — DAG 间的标准差
+print(result["rank_stability"])  # float — 平均 Kendall tau
+print(result["per_dag_values"])  # list[dict[str, float]]
 ```
 
 检查和导出 DAG：
 
 ```python
-dag.nodes()   # ["education", "income", "risk_score"]
-dag.edges()   # [("education", "income"), ("income", "risk_score")]
-dag.to_dot()  # 'digraph {\n  education -> income;\n  income -> risk_score;\n}'
+dag.nodes()                     # ["education", "income", "risk_score"]
+dag.edges()                     # [("education", "income"), ("income", "risk_score")]
+dag.to_dot()                    # 'digraph {\n  education -> income;\n  ...\n}'
+dag.to_json()                   # '{"nodes":[...],"edges":[...]}'
+dag.ancestors("risk_score")     # ["education", "income"]
+dag.descendants("education")    # ["income", "risk_score"]
+dag.topological_layers()        # [["education"], ["income"], ["risk_score"]]
+
+# 从 JSON 恢复 DAG
+dag2 = CausalDAG.from_json(dag.to_json())
 
 # 转换为 networkx（需单独安装 networkx）
 import networkx as nx
 G = nx.DiGraph(dag.edges())
 ```
 
-使用 `make_tabular_value_fn` 将 sklearn 模型封装为价值函数（需要 numpy）：
+sklearn 兼容模型的高级 API `TabularExplainer`（需要 numpy）：
 
 ```python
-from causasv import make_tabular_value_fn
+from causasv import CausalDAG, TabularExplainer
 
-value_fn = make_tabular_value_fn(
-    model=my_classifier,      # 任何 sklearn 兼容的模型
-    x=X_test[0],             # 待解释的实例，形状 (n_features,)
-    background=X_train,      # 参考数据集；列均值作为缺失特征的基准
+dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
+
+explainer = TabularExplainer.from_model(
+    model=my_classifier,
+    dag=dag,
+    background=X_train,
     feature_names=["education", "income", "risk_score"],
 )
-values = explainer.explain(value_fn, method="auto")
+values = explainer.explain_instance(X_test[0], method="auto")
 ```
 
 ## 精确计算 vs 近似计算
@@ -143,16 +226,19 @@ values = explainer.explain(value_fn, method="auto")
 |------|---------|-----|
 | `exact` | 小型 DAG（n ≤ ~8）；枚举所有线性扩展 | `explainer.exact(value_fn)` |
 | `exact_tree` | 有根有向树；顺序理想 DP | `explainer.exact_tree(value_fn)` |
-| `exact_dag` | 一般 DAG，n ≤ 20；顺序理想 DP | `explainer.exact_dag(value_fn)` |
-| `approx` | 任意 DAG（n > 20）；重要性加权采样 | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
+| `exact_dag` | 一般 DAG，n ≤ 20；密集顺序理想 DP | `explainer.exact_dag(value_fn)` |
+| `exact_dag_sparse` | 稀疏 DAG，n ≤ 28；仅对有效顺序理想 BFS | `explainer.exact_dag_sparse(value_fn)` |
+| `approx` | 任意 DAG（n > 28 或超出内存限制）；IS 采样 | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` 调度：n ≤ 8 → `exact`；有根树 → `exact_tree`；n ≤ 20 → `exact_dag`；否则 → `approx`。
+`auto` 调度：n ≤ 8 → `exact`；有根树 → `exact_tree`；n ≤ 20 → `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；否则 → `approx`。
+
+`exact_dag_sparse` 只访问有效顺序理想（所有节点的父节点也存在的集合）。对于稀疏 DAG，这可能比 2^n 少几个数量级，返回 `n_order_ideals`、`state_ratio` 和 `memory_mb` 诊断信息。
 
 近似估计器使用自归一化重要性采样来校正前沿采样器引入的偏差，因此即使对于近似结果，效率公理（Σφ_i = v(V) − v(∅)）也精确成立。
 
 ## 状态
 
-实验性 — v0.6.0。在 v1.0 之前公共 API 可能会发生变化。
+实验性 — v0.8.0。在 v1.0 之前公共 API 可能会发生变化。
 
 ## 算法状态
 
@@ -161,6 +247,7 @@ values = explainer.explain(value_fn, method="auto")
 | `exact` | 枚举所有线性扩展 | 参考 oracle；实用范围 n ≤ ~8 |
 | `exact_tree` | 有根树验证 + 顺序理想 DP | 高效；使用钩子长度公式 |
 | `exact_dag` | 2^n 状态上的顺序理想 DP | 一般 DAG，n ≤ 20；O(2^n × n) |
+| `exact_dag_sparse` | 有效顺序理想 BFS + 懒惰 dp_ind | 稀疏 DAG，n ≤ 28；内存有界 |
 | `approx` | 拓扑排序上的自归一化 IS | 任意 DAG；校正前沿采样器偏差 |
 
 ## 特性矩阵
@@ -170,10 +257,15 @@ values = explainer.explain(value_fn, method="auto")
 | 精确 ASV（暴力枚举） | ✓ | ✓ | 稳定 |
 | 有根树精确 DP | ✓ | ✓ | 实验性 |
 | 一般 DAG 精确 DP（n ≤ 20） | ✓ | ✓ | 实验性 |
+| 稀疏 DAG 精确 DP（n ≤ 28） | ✓ | ✓ | 实验性 |
 | 带 ESS 的近似 ASV | ✓ | ✓ | 实验性 |
-| 自适应近似 | ✓ | ✓ | 实验性 |
-| sklearn / NumPy 辅助函数 | — | ✓ | 实验性 |
-| 图导出（DOT / networkx） | planned | ✓ | 实验性 |
+| 自适应近似 + CI | ✓ | ✓ | 实验性 |
+| 种子确定性并行近似 | ✓ | ✓ | 实验性 |
+| 批量联合评估 | ✓ | ✓ | 实验性 |
+| sklearn / NumPy 辅助函数（TabularExplainer） | — | ✓ | 实验性 |
+| DAG 集成 / 敏感性 ASV | — | ✓ | 实验性 |
+| DAG 结构检查 | — | ✓ | 实验性 |
+| 图导出（DOT / JSON / networkx） | — | ✓ | 实验性 |
 
 ## 论文对应
 
@@ -185,29 +277,32 @@ values = explainer.explain(value_fn, method="auto")
 | 有根树精确算法 | ✓ `exact_tree`（顺序理想 DP + 钩子长度公式） |
 | 一般 DAG 精确 DP | ✓ `exact_dag`（顺序理想 DP，n ≤ 20） |
 | 一般 DAG 的重要性采样近似 | ✓ `approx` |
-| 稀疏/内存受限精确 DAG DP | planned（`exact_dag_sparse`，n > 20） |
+| 稀疏 DAG 精确 DP | ✓ `exact_dag_sparse`（顺序理想 BFS，n ≤ 28） |
 | 因果发现 | — 超出范围 |
 
 ## 性能
 
-Apple M 系列（arm64，release 构建）基准测试。`v(S) = |S|`（可加价值函数）。
+Apple M 系列（arm64，release 构建）部分结果。`v(S) = |S|`。完整表格见 [docs/benchmarks.md](docs/benchmarks.md)。
 
-| 基准测试 | n | L(T) | 方法 | 时间 |
-|---------|---|-------|------|------|
-| 平衡二叉树 | 7 | 80 | `exact`（枚举） | ~70 µs |
-| 平衡二叉树 | 7 | 80 | `exact_tree`（DP） | ~145 µs |
-| 平衡二叉树 | 15 | ~22 M | `exact` | — （不可行） |
-| 平衡二叉树 | 15 | ~22 M | `exact_tree`（DP） | ~7.8 ms |
-| 毛毛虫树 | 10 | 945 | `exact_tree`（DP） | ~347 µs |
-| 近似（链式） | 10 | — | `approx`（1k 采样） | ~2.9 ms |
+| DAG | n | 方法 | 时间 |
+|-----|---|------|------|
+| 链式 | 7 | `exact`（暴力） | 2.7 µs |
+| 平衡树 | 15 | `exact_tree`（DP） | 2.8 ms |
+| 毛毛虫树 | 10 | `exact_tree`（DP） | 170 µs |
+| 链式 | 16 | `exact_dag`（密集 DP） | 5.3 ms |
+| 链式 | 24 | `exact_dag_sparse` | 15 µs |
+| 两条并行链 | 20 | `exact_dag`（密集，100万状态） | **87.9 ms** |
+| 两条并行链 | 20 | `exact_dag_sparse`（121状态） | **91 µs**（约1000倍） |
+| 链式 | 10 | `approx`（1k 采样） | 916 µs |
+| 链式 | 20 | `approx` 串行种子（10k） | 18.2 ms |
+| 链式 | 20 | `approx` 并行 4 线程（10k） | 7.4 ms |
 
 使用 `cargo bench` 重现结果。
 
 ## 当前限制
 
 - 暴力精确 ASV 对线性扩展数量呈指数级增长；仅适用于 n ≤ ~8 的节点。
-- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1）。对于 n ≤ 20 的一般 DAG，使用 `exact_dag`；更大的 DAG 使用 `approx`。
-- Python 绑定提供 `nodes()`、`edges()`、`to_dot()` 和 `make_tabular_value_fn`；图级 DOT 导出有效，但 Rust 侧导出尚未实现。
+- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1）。n ≤ 20 的一般 DAG 使用 `exact_dag`，n ≤ 28 的稀疏 DAG 使用 `exact_dag_sparse`，更大的 DAG 使用 `approx`。
 - 没有内置的因果发现、模型训练或自动图构建。
 
 ## 与其他工具的比较
