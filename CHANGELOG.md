@@ -5,7 +5,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.8.0] — 2026-06
 
 ### Changed
 - `src/numerics.rs`: extracted `kahan_add` from `approx.rs` into a dedicated
