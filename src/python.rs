@@ -122,6 +122,8 @@ impl PyASVExplainer {
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
+        parallel: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<AsvResult> {
         let names = &self.names;
         let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
@@ -137,9 +139,12 @@ impl PyASVExplainer {
             })
         };
         let make_cfg = || {
-            let mut cfg = SamplingConfig::new(n_samples);
+            let mut cfg = SamplingConfig::new(n_samples).with_parallel(parallel);
             if let Some(s) = seed {
                 cfg = cfg.with_seed(s);
+            }
+            if let Some(t) = num_threads {
+                cfg = cfg.with_num_threads(t);
             }
             cfg
         };
@@ -187,17 +192,25 @@ impl PyASVExplainer {
     /// Compute ASV values.
     ///
     /// Returns a `dict[str, float]` mapping node name to its ASV value.
-    /// For approximate methods, use `explain_with_diagnostics()` to also get ESS.
-    #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
+    /// Set `parallel=True` with a `seed` to use deterministic parallel sampling
+    /// (per-worker splitmix64 seed splitting — reproducible across runs).
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn, method="auto", n_samples=10_000, seed=None,
+                        parallel=false, num_threads=None))]
     fn explain(
         &self,
-        _py: Python<'_>,
+        py: Python<'_>,
         value_fn: Py<PyAny>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
+        parallel: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<HashMap<String, f64>> {
-        let result = self.run(value_fn, method, n_samples, seed)?;
+        // Release the GIL before any sampling so that Rayon worker threads (or even the
+        // single-threaded path) can re-acquire it via Python::attach() without deadlocking.
+        let result =
+            py.detach(|| self.run(value_fn, method, n_samples, seed, parallel, num_threads))?;
         Ok(self.values_map(&result))
     }
 
@@ -208,7 +221,12 @@ impl PyASVExplainer {
     ///   - `"ess"`: float | None — effective sample size (approx only)
     ///   - `"n_samples"`: int — orderings used
     ///   - `"is_exact"`: bool
-    #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
+    ///   - `"parallel"`: bool — whether parallel sampling was used
+    ///   - `"num_threads"`: int | None — worker count for seeded parallel
+    ///   - `"deterministic"`: bool — True when seed + parallel → per-worker seeds
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn, method="auto", n_samples=10_000, seed=None,
+                        parallel=false, num_threads=None))]
     fn explain_with_diagnostics<'py>(
         &self,
         py: Python<'py>,
@@ -216,11 +234,15 @@ impl PyASVExplainer {
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
+        parallel: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let result = self.run(value_fn, method, n_samples, seed)?;
+        let result =
+            py.detach(|| self.run(value_fn, method, n_samples, seed, parallel, num_threads))?;
         let ess_ratio = result
             .effective_sample_size
             .map(|e| e / result.n_samples as f64);
+        let deterministic = seed.is_some() && parallel;
         let d = PyDict::new(py);
         d.set_item("values", self.values_map(&result))?;
         d.set_item("ess", result.effective_sample_size)?;
@@ -229,6 +251,9 @@ impl PyASVExplainer {
         d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
         d.set_item("method", method)?;
+        d.set_item("parallel", parallel)?;
+        d.set_item("num_threads", num_threads)?;
+        d.set_item("deterministic", deterministic)?;
         Ok(d)
     }
 

@@ -8,6 +8,11 @@ use crate::graph::{Dag, NodeId};
 pub struct SamplingConfig {
     pub n_samples: usize,
     pub seed: Option<u64>,
+    /// When true, use Rayon parallel sampling. Seeded + parallel → per-worker seeds via
+    /// splitmix64 bijection so results are deterministic regardless of thread count.
+    pub parallel: bool,
+    /// Number of worker threads for seeded parallel sampling. None = rayon default.
+    pub num_threads: Option<usize>,
 }
 
 impl SamplingConfig {
@@ -15,6 +20,8 @@ impl SamplingConfig {
         Self {
             n_samples,
             seed: None,
+            parallel: false,
+            num_threads: None,
         }
     }
 
@@ -22,6 +29,29 @@ impl SamplingConfig {
         self.seed = Some(seed);
         self
     }
+
+    pub fn with_parallel(mut self, parallel: bool) -> Self {
+        self.parallel = parallel;
+        self
+    }
+
+    pub fn with_num_threads(mut self, num_threads: usize) -> Self {
+        self.num_threads = Some(num_threads);
+        self
+    }
+}
+
+/// splitmix64 bijection: maps (global_seed, worker_index) → a deterministic per-worker seed.
+///
+/// Each worker gets a distinct seed that is a deterministic function of the global seed and
+/// its index, so `seed=42, parallel=true` always produces the same aggregate result.
+pub(crate) fn worker_seed(global: u64, k: usize) -> u64 {
+    let mut x = global
+        .wrapping_add(k as u64)
+        .wrapping_mul(0x9e3779b97f4a7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
 }
 
 /// Configuration for adaptive approximate ASV sampling.
