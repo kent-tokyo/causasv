@@ -185,7 +185,7 @@ values = explainer.explain(value_fn, method="auto")
 | 有根树精确算法 | ✓ `exact_tree`（顺序理想 DP + 钩子长度公式） |
 | 一般 DAG 精确 DP | ✓ `exact_dag`（顺序理想 DP，n ≤ 20） |
 | 一般 DAG 的重要性采样近似 | ✓ `approx` |
-| 一般 DAG 优化 DP | planned |
+| 稀疏/内存受限精确 DAG DP | planned（`exact_dag_sparse`，n > 20） |
 | 因果发现 | — 超出范围 |
 
 ## 性能
