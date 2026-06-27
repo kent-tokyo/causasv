@@ -20,6 +20,19 @@ jobs:
       - run: cargo test
       - run: cargo package --no-verify
 
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check version consistency (Cargo.toml / py/pyproject.toml / CITATION.cff)
+        run: |
+          RUST=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
+          PY=$(grep '^version' py/pyproject.toml | grep -oP '"\K[^"]+')
+          CIT=$(grep '^version:' CITATION.cff | awk '{print $2}')
+          echo "Rust=$RUST  Python=$PY  Citation=$CIT"
+          [ "$RUST" = "$PY" ] && [ "$RUST" = "$CIT" ] || \
+            { echo "ERROR: version mismatch — bump all three files together"; exit 1; }
+
   python:
     runs-on: ubuntu-latest
     steps:

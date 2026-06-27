@@ -441,6 +441,20 @@ The CodeQL badge in README uses a static `img.shields.io` badge (not a workflow 
 [![CodeQL](https://img.shields.io/badge/CodeQL-enabled-blue.svg)](https://github.com/kent-tokyo/causasv/security/code-scanning)
 ```
 
+## Version management
+
+These three files must always have the same version string:
+- `Cargo.toml` — `package.version`
+- `py/pyproject.toml` — `project.version`
+- `CITATION.cff` — `version`
+
+The CI `version-sync` job enforces this automatically on every push and PR.
+When bumping a version, change all three files in the same commit.
+
+README files contain a human-readable version string (`Experimental — vX.Y.Z`) that
+should also be updated, but is NOT checked by CI (the string location is fragile).
+Update it manually as part of every release commit.
+
 ## Quality Bar
 
 Before considering a task complete:
