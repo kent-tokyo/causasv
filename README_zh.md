@@ -171,7 +171,7 @@ values = explainer.explain(value_fn, method="auto")
 | 有根树精确 DP | ✓ | ✓ | 实验性 |
 | 一般 DAG 精确 DP（n ≤ 20） | ✓ | ✓ | 实验性 |
 | 带 ESS 的近似 ASV | ✓ | ✓ | 实验性 |
-| 自适应近似 | planned | planned | 计划中（v0.6） |
+| 自适应近似 | ✓ | ✓ | 实验性 |
 | sklearn / NumPy 辅助函数 | — | ✓ | 实验性 |
 | 图导出（DOT / networkx） | planned | ✓ | 实验性 |
 
