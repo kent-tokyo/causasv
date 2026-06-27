@@ -270,3 +270,24 @@ fn test_auto_sparse_range_dag_succeeds() {
         "efficiency axiom: expected 22.0, got {total}"
     );
 }
+
+#[test]
+#[ignore = "slow: BFS through 2^21 antichain states to trigger u64 overflow fallback"]
+fn test_auto_fallback_to_approx_on_overflow() {
+    // Antichain of 21 nodes: no edges, so all 2^21 subsets are valid order ideals.
+    // dp_fwd for the full mask needs 21! > u64::MAX → Overflow → auto falls back to approx.
+    let mut dag = Dag::new();
+    for i in 0..21 {
+        dag.add_node(&format!("n{i}"));
+    }
+    let explainer = AsvExplainer::new(dag);
+    let result = explainer
+        .auto(
+            |c| Ok(c.len() as f64),
+            SamplingConfig::new(1_000).with_seed(42),
+        )
+        .unwrap();
+    assert_eq!(result.fallback_from.as_deref(), Some("exact_dag_sparse"));
+    assert_eq!(result.method_used, Some("approx"));
+    assert!(!result.is_exact);
+}

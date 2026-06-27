@@ -1,4 +1,4 @@
-use causasv::{AsvExplainer, Dag, SamplingConfig};
+use causasv::{AdaptiveSamplingConfig, AsvExplainer, Dag, SamplingConfig};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
@@ -339,6 +339,39 @@ fn bench_approx_parallel_chain_20(c: &mut Criterion) {
     group.finish();
 }
 
+// ── approx vs approx_adaptive ────────────────────────────────────────────────
+
+fn bench_approx_vs_adaptive_chain_10(c: &mut Criterion) {
+    // Fixed-sample approx vs adaptive convergence: how much does adaptive save?
+    // adaptive stops early when rel_change < rel_tol AND ess_ratio >= ess_ratio_min.
+    let dag = make_chain(10);
+    let explainer = AsvExplainer::new(dag);
+    let mut group = c.benchmark_group("approx_vs_adaptive_chain_10");
+    group.bench_function("fixed_10k", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+    group.bench_function("adaptive_max10k", |b| {
+        b.iter(|| {
+            explainer
+                .approximate_adaptive(
+                    |s| Ok(black_box(s.len() as f64)),
+                    AdaptiveSamplingConfig::new()
+                        .with_max_samples(10_000)
+                        .with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_exact_chain_7,
@@ -356,5 +389,6 @@ criterion_group!(
     bench_approx_tree,
     bench_approx_vs_batched_chain_10,
     bench_approx_parallel_chain_20,
+    bench_approx_vs_adaptive_chain_10,
 );
 criterion_main!(benches);
