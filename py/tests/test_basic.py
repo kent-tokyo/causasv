@@ -636,3 +636,72 @@ def test_exact_dag_sparse_chain_large():
     # Chain has one ordering; all values should be 1.0
     for v in result.values():
         assert abs(v - 1.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# explain_stability tests
+# ---------------------------------------------------------------------------
+
+
+def test_explain_stability_keys():
+    from causasv import explain_stability
+
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+    result = explain_stability(
+        explainer, lambda n: float(len(n)), seeds=[1, 2, 3], method="approx", n_samples=500
+    )
+    assert set(result.keys()) == {"mean_values", "std_values", "rank_stability", "per_seed_values"}
+    assert set(result["mean_values"].keys()) == {"a", "b", "c"}
+    assert set(result["per_seed_values"].keys()) == {1, 2, 3}
+
+
+def test_explain_stability_exact_has_zero_std():
+    """Exact method is deterministic — std must be 0 regardless of seeds."""
+    from causasv import explain_stability
+
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    explainer = ASVExplainer(dag)
+
+    def distinct_fn(names):
+        s = set(names)
+        return ("a" in s) * 3 + ("b" in s) * 2 + ("c" in s) * 7 * ("a" in s and "c" in s)
+
+    result = explain_stability(explainer, distinct_fn, seeds=[1, 2, 3, 4], method="exact")
+    for f, s in result["std_values"].items():
+        assert abs(s) < 1e-12, f"expected std=0 for exact method on {f}, got {s}"
+    assert abs(result["rank_stability"] - 1.0) < 1e-9
+
+
+def test_explain_stability_rank_stability_range():
+    from causasv import explain_stability
+
+    dag = CausalDAG.from_edges([("x", "y")])
+    explainer = ASVExplainer(dag)
+    result = explain_stability(
+        explainer, lambda n: float(len(n)), seeds=[10, 20, 30], method="approx", n_samples=200
+    )
+    assert -1.0 <= result["rank_stability"] <= 1.0
+
+
+def test_explain_stability_mean_equals_average():
+    from causasv import explain_stability
+
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    seeds = [5, 6, 7]
+    result = explain_stability(
+        explainer, lambda n: float(len(n)), seeds=seeds, method="approx", n_samples=300
+    )
+    for f in result["mean_values"]:
+        expected = sum(result["per_seed_values"][s][f] for s in seeds) / len(seeds)
+        assert abs(result["mean_values"][f] - expected) < 1e-12
+
+
+def test_explain_stability_empty_seeds_raises():
+    from causasv import explain_stability
+
+    dag = CausalDAG.from_edges([("a", "b")])
+    explainer = ASVExplainer(dag)
+    with pytest.raises(ValueError, match="seeds"):
+        explain_stability(explainer, lambda n: float(len(n)), seeds=[])
