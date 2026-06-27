@@ -222,6 +222,22 @@ def test_dag_to_dot():
     assert dot.strip().endswith("}")
 
 
+def test_dag_to_json():
+    import json
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    data = json.loads(dag.to_json())
+    assert set(data["nodes"]) == {"a", "b", "c"}
+    assert {"from": "a", "to": "b"} in data["edges"]
+    assert {"from": "b", "to": "c"} in data["edges"]
+
+
+def test_dag_from_json_roundtrip():
+    dag = CausalDAG.from_edges([("x", "y"), ("y", "z")])
+    restored = CausalDAG.from_json(dag.to_json())
+    assert restored.nodes() == dag.nodes()
+    assert restored.edges() == dag.edges()
+
+
 def test_explain_adaptive_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
