@@ -262,7 +262,7 @@ The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_s
 
 ## Status
 
-Experimental — v0.8.0. Public API may change before v1.0.
+Experimental — v0.8.1. Public API may change before v1.0.
 
 ## Algorithm status
 
