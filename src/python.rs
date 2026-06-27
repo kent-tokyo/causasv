@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -187,6 +187,98 @@ impl PyCausalDAG {
     /// Validate the graph (check for cycles, empty graph, etc.).
     fn validate(&self) -> PyResult<()> {
         self.inner.validate().map_err(py_err)
+    }
+
+    /// Return sorted ancestor names — nodes from which `name` is reachable.
+    fn ancestors(&self, name: &str) -> PyResult<Vec<String>> {
+        let start = self
+            .inner
+            .node_id(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown node: {name}")))?;
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        for &p in self.inner.parents_raw(start) {
+            if visited.insert(p) {
+                queue.push_back(p);
+            }
+        }
+        while let Some(node) = queue.pop_front() {
+            for &p in self.inner.parents_raw(node) {
+                if visited.insert(p) {
+                    queue.push_back(p);
+                }
+            }
+        }
+        let mut result: Vec<String> = visited
+            .iter()
+            .map(|&id| self.inner.node_name(id).unwrap().to_string())
+            .collect();
+        result.sort();
+        Ok(result)
+    }
+
+    /// Return sorted descendant names — nodes reachable from `name`.
+    fn descendants(&self, name: &str) -> PyResult<Vec<String>> {
+        let start = self
+            .inner
+            .node_id(name)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown node: {name}")))?;
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        for &c in self.inner.children_raw(start) {
+            if visited.insert(c) {
+                queue.push_back(c);
+            }
+        }
+        while let Some(node) = queue.pop_front() {
+            for &c in self.inner.children_raw(node) {
+                if visited.insert(c) {
+                    queue.push_back(c);
+                }
+            }
+        }
+        let mut result: Vec<String> = visited
+            .iter()
+            .map(|&id| self.inner.node_name(id).unwrap().to_string())
+            .collect();
+        result.sort();
+        Ok(result)
+    }
+
+    /// Return nodes grouped by topological layer (roots in layer 0).
+    ///
+    /// All nodes in layer k have their parents in layers 0..k.
+    fn topological_layers(&self) -> Vec<Vec<String>> {
+        let n = self.inner.node_count();
+        let mut remaining_in = self.inner.in_degrees();
+        let mut layers = Vec::new();
+        let mut remaining: Vec<bool> = vec![true; n];
+        loop {
+            let layer: Vec<usize> = (0..n)
+                .filter(|&i| remaining[i] && remaining_in[i] == 0)
+                .collect();
+            if layer.is_empty() {
+                break;
+            }
+            for &i in &layer {
+                remaining[i] = false;
+                for &child in self.inner.children_raw(crate::graph::NodeId(i as u32)) {
+                    remaining_in[child.0 as usize] -= 1;
+                }
+            }
+            let mut names: Vec<String> = layer
+                .iter()
+                .map(|&i| {
+                    self.inner
+                        .node_name(crate::graph::NodeId(i as u32))
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            names.sort();
+            layers.push(names);
+        }
+        layers
     }
 }
 

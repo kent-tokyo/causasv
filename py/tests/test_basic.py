@@ -238,6 +238,31 @@ def test_dag_from_json_roundtrip():
     assert restored.edges() == dag.edges()
 
 
+def test_dag_ancestors():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert sorted(dag.ancestors("c")) == ["a", "b"]
+    assert dag.ancestors("b") == ["a"]
+    assert dag.ancestors("a") == []
+
+
+def test_dag_descendants():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert sorted(dag.descendants("a")) == ["b", "c"]
+    assert dag.descendants("b") == ["c"]
+    assert dag.descendants("c") == []
+
+
+def test_dag_topological_layers():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert dag.topological_layers() == [["a"], ["b"], ["c"]]
+
+    dag2 = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    layers2 = dag2.topological_layers()
+    assert layers2[0] == ["a"]
+    assert sorted(layers2[1]) == ["b", "c"]
+    assert layers2[2] == ["d"]
+
+
 def test_explain_adaptive_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
