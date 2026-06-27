@@ -37,7 +37,10 @@ where
     let parallel = config.parallel || seed.is_none();
 
     let (numerator, denominator, sum_w_sq) = if !parallel {
-        // Seeded single-threaded: exact reproducibility + Kahan summation for precision.
+        // Seeded single-threaded: collect all samples first, then apply per-batch
+        // log-weight normalization before exp() for consistency with the batched paths.
+        // Self-normalized IS is invariant to a common scale factor, so subtracting
+        // max(log_w) does not change ASV values but prevents potential overflow.
         let mut rng = make_rng(seed);
         let mut numerator = vec![0.0f64; n];
         let mut num_comp = vec![0.0f64; n]; // Kahan compensation for numerator[i]
@@ -46,9 +49,15 @@ where
         let mut sum_w_sq = 0.0f64;
         let mut wsq_comp = 0.0f64;
         let mut cache = HashMap::<u64, f64>::new();
-        for _ in 0..config.n_samples {
-            let sample = sample_one(dag, &mut rng);
-            let w = (-sample.log_q).exp(); // IS weight = 1/q(π)
+        let samples: Vec<_> = (0..config.n_samples)
+            .map(|_| sample_one(dag, &mut rng))
+            .collect();
+        let max_log_w = samples
+            .iter()
+            .map(|s| -s.log_q)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for sample in &samples {
+            let w = ((-sample.log_q) - max_log_w).exp(); // log-normalized IS weight
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
