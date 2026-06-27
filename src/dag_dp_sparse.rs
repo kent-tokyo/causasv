@@ -80,7 +80,11 @@ where
                 let s_next = s | (1u64 << i);
                 let entry = dp_fwd.entry(s_next).or_insert(0);
                 let is_new = *entry == 0;
-                *entry += fwd;
+                *entry = entry.checked_add(fwd).ok_or_else(|| {
+                    CausasvError::Overflow(format!(
+                        "dp_fwd[{s_next:#b}] overflowed u64 — use approx for this DAG"
+                    ))
+                })?;
                 if is_new {
                     queue.push_back(s_next);
                     // Memory guard: ~80 bytes per entry (two HashMaps combined)
@@ -104,7 +108,7 @@ where
     // computed lazily with memoization. Needed for suffix weight computation.
     let mut dp_ind: HashMap<u64, u64> = HashMap::new();
 
-    let total = dp_ind_lazy(full_mask, &parents_mask, n, &mut dp_ind) as f64;
+    let total = dp_ind_lazy(full_mask, &parents_mask, n, &mut dp_ind)? as f64;
 
     // Accumulate ASV weights
     let mut phi = vec![0.0f64; n];
@@ -124,7 +128,7 @@ where
             }
             // suffix = V \ (S ∪ {i})
             let suffix_mask = full_mask ^ (s | (1u64 << i));
-            let w_suffix = dp_ind_lazy(suffix_mask, &parents_mask, n, &mut dp_ind) as f64;
+            let w_suffix = dp_ind_lazy(suffix_mask, &parents_mask, n, &mut dp_ind)? as f64;
             let s_with_i = s | (1u64 << i);
             phi[i] += w_prefix
                 * w_suffix
@@ -158,12 +162,19 @@ where
 ///
 /// Node i is a source in G[mask] iff none of its parents (in the full graph) are in mask.
 /// Recurrence: dp_ind[mask] = Σ dp_ind[mask \ {i}] over sources i in G[mask].
-fn dp_ind_lazy(mask: u64, parents_mask: &[u64], n: usize, cache: &mut HashMap<u64, u64>) -> u64 {
+///
+/// Returns `Overflow` if the count exceeds u64::MAX.
+fn dp_ind_lazy(
+    mask: u64,
+    parents_mask: &[u64],
+    n: usize,
+    cache: &mut HashMap<u64, u64>,
+) -> Result<u64, CausasvError> {
     if mask == 0 {
-        return 1;
+        return Ok(1);
     }
     if let Some(&v) = cache.get(&mask) {
-        return v;
+        return Ok(v);
     }
     let mut result = 0u64;
     for (i, &pmask) in parents_mask.iter().enumerate().take(n) {
@@ -172,9 +183,14 @@ fn dp_ind_lazy(mask: u64, parents_mask: &[u64], n: usize, cache: &mut HashMap<u6
         }
         if pmask & mask == 0 {
             // i has no parents in mask → source in G[mask]
-            result += dp_ind_lazy(mask ^ (1u64 << i), parents_mask, n, cache);
+            let sub = dp_ind_lazy(mask ^ (1u64 << i), parents_mask, n, cache)?;
+            result = result.checked_add(sub).ok_or_else(|| {
+                CausasvError::Overflow(format!(
+                    "dp_ind[{mask:#b}] overflowed u64 — use approx for this DAG"
+                ))
+            })?;
         }
     }
     cache.insert(mask, result);
-    result
+    Ok(result)
 }
