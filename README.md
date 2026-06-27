@@ -114,9 +114,13 @@ print(info["method"])     # str — the method name passed in (e.g. "approx")
 Inspect and export the DAG:
 
 ```python
-dag.nodes()   # ["education", "income", "risk_score"]
-dag.edges()   # [("education", "income"), ("income", "risk_score")]
-dag.to_dot()  # 'digraph {\n  education -> income;\n  income -> risk_score;\n}'
+dag.nodes()    # ["education", "income", "risk_score"]
+dag.edges()    # [("education", "income"), ("income", "risk_score")]
+dag.to_dot()   # 'digraph {\n  education -> income;\n  ...\n}'
+dag.to_json()  # '{"nodes":["education","income","risk_score"],"edges":[...]}'
+
+# Restore a DAG from JSON
+dag2 = CausalDAG.from_json(dag.to_json())
 
 # Convert to networkx (networkx must be installed separately)
 import networkx as nx
