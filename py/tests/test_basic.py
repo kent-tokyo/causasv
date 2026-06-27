@@ -180,6 +180,7 @@ def test_explain_with_diagnostics_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
     info = explainer.explain_with_diagnostics(lambda n: float(len(n)), method="exact")
+    # Keep in sync with explain_with_diagnostics() in src/python.rs
     expected_keys = {
         "values",
         "ess",
@@ -194,6 +195,8 @@ def test_explain_with_diagnostics_keys():
         "n_order_ideals",
         "state_ratio",
         "memory_mb",
+        "fallback_from",
+        "fallback_reason",
     }
     assert expected_keys == set(info.keys())
 
