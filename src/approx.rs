@@ -8,6 +8,19 @@ use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig, make_rng, sample_one, worker_seed};
 
+/// Kahan compensated addition: accumulates `x` into `*sum` with `*comp` tracking
+/// the running error. Reduces floating-point rounding from O(n·ε) to O(ε²) per step.
+///
+/// Applied to `denominator`, `sum_w_sq`, and per-node `numerator` accumulators
+/// in the seeded-serial and adaptive IS paths.
+#[inline]
+fn kahan_add(sum: &mut f64, comp: &mut f64, x: f64) {
+    let y = x - *comp;
+    let t = *sum + y;
+    *comp = (t - *sum) - y;
+    *sum = t;
+}
+
 /// Self-normalized importance sampling estimator for ASV.
 ///
 /// The frontier sampler assigns unequal probabilities to orderings, so naive averaging is biased.
@@ -36,24 +49,31 @@ where
     let parallel = config.parallel || seed.is_none();
 
     let (numerator, denominator, sum_w_sq) = if !parallel {
-        // Seeded single-threaded: exact reproducibility
+        // Seeded single-threaded: exact reproducibility + Kahan summation for precision.
         let mut rng = make_rng(seed);
         let mut numerator = vec![0.0f64; n];
+        let mut num_comp = vec![0.0f64; n]; // Kahan compensation for numerator[i]
         let mut denominator = 0.0f64;
+        let mut denom_comp = 0.0f64;
         let mut sum_w_sq = 0.0f64;
+        let mut wsq_comp = 0.0f64;
         let mut cache = HashMap::<u64, f64>::new();
         for _ in 0..config.n_samples {
             let sample = sample_one(dag, &mut rng);
             let w = (-sample.log_q).exp(); // IS weight = 1/q(π)
-            denominator += w;
-            sum_w_sq += w * w;
+            kahan_add(&mut denominator, &mut denom_comp, w);
+            kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
             for &node in &sample.ordering {
                 let without = prefix_mask;
                 let with_node = prefix_mask | (1u64 << node.0);
-                numerator[node.0 as usize] += w
-                    * (value_cached(&mut cache, &value_fn, with_node)?
-                        - value_cached(&mut cache, &value_fn, without)?);
+                let delta = value_cached(&mut cache, &value_fn, with_node)?
+                    - value_cached(&mut cache, &value_fn, without)?;
+                kahan_add(
+                    &mut numerator[node.0 as usize],
+                    &mut num_comp[node.0 as usize],
+                    w * delta,
+                );
                 prefix_mask = with_node;
             }
         }
@@ -251,9 +271,17 @@ where
             }
         }
 
-        // Process IS contributions using cache
+        // Process IS contributions using cache.
+        // Log-weight normalization within the batch: subtract the maximum log-weight
+        // before exp() to prevent potential overflow for extreme frontier distributions.
+        // Self-normalized IS is invariant to a common multiplicative scale on weights,
+        // so subtracting max(log_w) from all log_w_i does not change ASV values.
+        let max_log_w = samples
+            .iter()
+            .map(|s| -s.log_q)
+            .fold(f64::NEG_INFINITY, f64::max);
         for s in &samples {
-            let w = (-s.log_q).exp();
+            let w = ((-s.log_q) - max_log_w).exp(); // batch-normalized IS weight
             denominator += w;
             sum_w_sq += w * w;
             let mut prefix_mask: u64 = 0;
@@ -324,9 +352,13 @@ where
     let mut cache = HashMap::<u64, f64>::new();
 
     let mut numerator = vec![0.0f64; n]; // Σ w·Δ_i
+    let mut num_comp = vec![0.0f64; n]; // Kahan compensation for numerator
     let mut num_sq = vec![0.0f64; n]; // Σ (w·Δ_i)²
+    let mut num_sq_comp = vec![0.0f64; n]; // Kahan compensation for num_sq
     let mut denominator = 0.0f64; // Σ w
+    let mut denom_comp = 0.0f64;
     let mut sum_w_sq = 0.0f64; // Σ w²
+    let mut wsq_comp = 0.0f64;
     let mut total_samples = 0usize;
     let mut prev_values = vec![f64::NAN; n];
     let mut converged = false;
@@ -337,8 +369,8 @@ where
         for _ in 0..batch {
             let sample = sample_one(dag, &mut rng);
             let w = (-sample.log_q).exp();
-            denominator += w;
-            sum_w_sq += w * w;
+            kahan_add(&mut denominator, &mut denom_comp, w);
+            kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
             for &node in &sample.ordering {
                 let without = prefix_mask;
@@ -346,8 +378,16 @@ where
                 let delta = value_cached(&mut cache, &value_fn, with_node)?
                     - value_cached(&mut cache, &value_fn, without)?;
                 let wd = w * delta;
-                numerator[node.0 as usize] += wd;
-                num_sq[node.0 as usize] += wd * wd;
+                kahan_add(
+                    &mut numerator[node.0 as usize],
+                    &mut num_comp[node.0 as usize],
+                    wd,
+                );
+                kahan_add(
+                    &mut num_sq[node.0 as usize],
+                    &mut num_sq_comp[node.0 as usize],
+                    wd * wd,
+                );
                 prefix_mask = with_node;
             }
         }
