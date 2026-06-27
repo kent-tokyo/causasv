@@ -297,6 +297,8 @@ impl PyASVExplainer {
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
+        parallel: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<AsvResult> {
         let names = &self.names;
         let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
@@ -312,9 +314,12 @@ impl PyASVExplainer {
             })
         };
         let make_cfg = || {
-            let mut cfg = SamplingConfig::new(n_samples);
+            let mut cfg = SamplingConfig::new(n_samples).with_parallel(parallel);
             if let Some(s) = seed {
                 cfg = cfg.with_seed(s);
+            }
+            if let Some(t) = num_threads {
+                cfg = cfg.with_num_threads(t);
             }
             cfg
         };
@@ -402,26 +407,29 @@ impl PyASVExplainer {
     /// Compute ASV values.
     ///
     /// Returns a `dict[str, float]` mapping node name to its ASV value.
-    /// Pass `value_fn_batch` instead of (or alongside) `value_fn` to amortize Python
-    /// GIL overhead over `batch_size` samples per call (useful for large models).
-    /// `value_fn_batch` takes `list[list[str]]` and returns `list[float]`.
+    /// Pass `value_fn_batch` to amortize Python GIL overhead over `batch_size` samples per call.
+    /// Set `parallel=True` with a `seed` for deterministic parallel sampling.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (value_fn=None, method="auto", n_samples=10_000, seed=None,
-                        value_fn_batch=None, batch_size=256))]
+                        value_fn_batch=None, batch_size=256, parallel=false, num_threads=None))]
     fn explain(
         &self,
-        _py: Python<'_>,
+        py: Python<'_>,
         value_fn: Option<Py<PyAny>>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
         value_fn_batch: Option<Py<PyAny>>,
         batch_size: usize,
+        parallel: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<HashMap<String, f64>> {
         if let Some(batch_fn) = value_fn_batch {
             Ok(self.values_map(&self.run_batch(batch_fn, method, n_samples, seed, batch_size)?))
         } else if let Some(vfn) = value_fn {
-            Ok(self.values_map(&self.run(vfn, method, n_samples, seed)?))
+            let result =
+                py.detach(|| self.run(vfn, method, n_samples, seed, parallel, num_threads))?;
+            Ok(self.values_map(&result))
         } else {
             Err(PyValueError::new_err(
                 "must provide either value_fn or value_fn_batch",
@@ -436,11 +444,14 @@ impl PyASVExplainer {
     ///   - `"ess"`: float | None — effective sample size (approx only)
     ///   - `"n_samples"`: int — orderings used
     ///   - `"is_exact"`: bool
+    ///   - `"parallel"`: bool — whether parallel sampling was used
+    ///   - `"num_threads"`: int | None — worker count for seeded parallel
+    ///   - `"deterministic"`: bool — True when seed + parallel → per-worker seeds
     ///
     /// Pass `value_fn_batch` to amortize Python GIL overhead over `batch_size` samples per call.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (value_fn=None, method="auto", n_samples=10_000, seed=None,
-                        value_fn_batch=None, batch_size=256))]
+                        value_fn_batch=None, batch_size=256, parallel=false, num_threads=None))]
     fn explain_with_diagnostics<'py>(
         &self,
         py: Python<'py>,
@@ -450,11 +461,13 @@ impl PyASVExplainer {
         seed: Option<u64>,
         value_fn_batch: Option<Py<PyAny>>,
         batch_size: usize,
+        parallel: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let result = if let Some(batch_fn) = value_fn_batch {
             self.run_batch(batch_fn, method, n_samples, seed, batch_size)?
         } else if let Some(vfn) = value_fn {
-            self.run(vfn, method, n_samples, seed)?
+            py.detach(|| self.run(vfn, method, n_samples, seed, parallel, num_threads))?
         } else {
             return Err(PyValueError::new_err(
                 "must provide either value_fn or value_fn_batch",
@@ -463,6 +476,7 @@ impl PyASVExplainer {
         let ess_ratio = result
             .effective_sample_size
             .map(|e| e / result.n_samples as f64);
+        let deterministic = seed.is_some() && parallel;
         let d = PyDict::new(py);
         d.set_item("values", self.values_map(&result))?;
         d.set_item("ess", result.effective_sample_size)?;
@@ -471,6 +485,9 @@ impl PyASVExplainer {
         d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
         d.set_item("method", method)?;
+        d.set_item("parallel", parallel)?;
+        d.set_item("num_threads", num_threads)?;
+        d.set_item("deterministic", deterministic)?;
         Ok(d)
     }
 

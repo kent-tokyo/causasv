@@ -6,7 +6,7 @@ use crate::asv::AsvResult;
 use crate::cache::value_cached;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
-use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig, make_rng, sample_one};
+use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig, make_rng, sample_one, worker_seed};
 
 /// Self-normalized importance sampling estimator for ASV.
 ///
@@ -33,9 +33,10 @@ where
         )));
     }
     let seed = config.seed;
+    let parallel = config.parallel || seed.is_none();
 
-    let (numerator, denominator, sum_w_sq) = if seed.is_some() {
-        // Seeded: single-threaded for exact reproducibility
+    let (numerator, denominator, sum_w_sq) = if !parallel {
+        // Seeded single-threaded: exact reproducibility
         let mut rng = make_rng(seed);
         let mut numerator = vec![0.0f64; n];
         let mut denominator = 0.0f64;
@@ -57,8 +58,61 @@ where
             }
         }
         (numerator, denominator, sum_w_sq)
+    } else if let Some(global_seed) = seed {
+        // Seeded parallel: deterministic per-worker seeds via splitmix64.
+        // Divide samples across workers so each worker draws a contiguous slice;
+        // worker k's seed = worker_seed(global_seed, k) — a bijection, so no two
+        // workers share an RNG state.
+        let num_threads = config
+            .num_threads
+            .unwrap_or_else(rayon::current_num_threads);
+        let workers: Vec<(usize, u64)> = (0..num_threads)
+            .map(|k| {
+                let start = (config.n_samples * k) / num_threads;
+                let end = (config.n_samples * (k + 1)) / num_threads;
+                (end - start, worker_seed(global_seed, k))
+            })
+            .filter(|(count, _)| *count > 0)
+            .collect();
+
+        workers
+            .into_par_iter()
+            .map(
+                |(count, wseed)| -> Result<(Vec<f64>, f64, f64), CausasvError> {
+                    let mut rng = make_rng(Some(wseed));
+                    let mut cache = HashMap::<u64, f64>::new();
+                    let mut local_num = vec![0.0f64; n];
+                    let mut denom = 0.0f64;
+                    let mut wsq = 0.0f64;
+                    for _ in 0..count {
+                        let sample = sample_one(dag, &mut rng);
+                        let w = (-sample.log_q).exp();
+                        denom += w;
+                        wsq += w * w;
+                        let mut prefix_mask: u64 = 0;
+                        for &node in &sample.ordering {
+                            let without = prefix_mask;
+                            let with_node = prefix_mask | (1u64 << node.0);
+                            local_num[node.0 as usize] += w
+                                * (value_cached(&mut cache, &value_fn, with_node)?
+                                    - value_cached(&mut cache, &value_fn, without)?);
+                            prefix_mask = with_node;
+                        }
+                    }
+                    Ok((local_num, denom, wsq))
+                },
+            )
+            .try_reduce(
+                || (vec![0.0f64; n], 0.0f64, 0.0f64),
+                |mut a, b| {
+                    for (x, y) in a.0.iter_mut().zip(&b.0) {
+                        *x += y;
+                    }
+                    Ok((a.0, a.1 + b.1, a.2 + b.2))
+                },
+            )?
     } else {
-        // Unseeded: Rayon parallel, per-thread RNG + cache
+        // Unseeded parallel: Rayon with per-thread random RNG
         (0..config.n_samples)
             .into_par_iter()
             .map_init(
