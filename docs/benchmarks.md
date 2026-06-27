@@ -80,6 +80,18 @@ to O(n_samples / batch_size).
 
 Same seed + same num_threads → bitwise-identical results across runs.
 
+### Fixed-sample vs adaptive approximation (chain n=10, max 10k samples)
+
+| Method | Max samples | Time | Notes |
+|--------|------------|------|-------|
+| `approximate` | 10,000 (fixed) | 7.4 ms | always runs all samples |
+| `approximate_adaptive` | 10,000 (max) | 1.5 ms | stops early on convergence |
+
+**~5× speedup** when the estimates converge before the sample budget is exhausted.
+`approximate_adaptive` stops when `max_rel_change < rel_tol` AND `ess_ratio >= ess_ratio_min`
+(defaults: rel_tol=0.01, ess_ratio_min=0.10). For an additive value function on a chain,
+convergence is fast and the adaptive method uses far fewer samples.
+
 ---
 
 ## Notes
