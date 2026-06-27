@@ -158,6 +158,46 @@ impl PyASVExplainer {
         .map_err(py_err)
     }
 
+    /// Shared batched computation: calls value_fn_batch(list[list[str]]) -> list[float].
+    fn run_batch(
+        &self,
+        value_fn_batch: Py<PyAny>,
+        method: &str,
+        n_samples: usize,
+        seed: Option<u64>,
+        batch_size: usize,
+    ) -> PyResult<AsvResult> {
+        if !matches!(method, "approx" | "auto") {
+            return Err(PyValueError::new_err(
+                "value_fn_batch is only supported for method='approx' or 'auto'",
+            ));
+        }
+        let names = &self.names;
+        let rust_batch_fn = move |coalitions: &[Vec<NodeId>]| -> Result<Vec<f64>, CausasvError> {
+            Python::attach(|py| {
+                let py_coalitions: Vec<Vec<&str>> = coalitions
+                    .iter()
+                    .map(|coal| {
+                        coal.iter()
+                            .map(|id| names[id.0 as usize].as_str())
+                            .collect()
+                    })
+                    .collect();
+                value_fn_batch
+                    .call1(py, (py_coalitions,))
+                    .and_then(|r| r.extract::<Vec<f64>>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
+        };
+        let mut cfg = SamplingConfig::new(n_samples).with_batch_size(batch_size);
+        if let Some(s) = seed {
+            cfg = cfg.with_seed(s);
+        }
+        self.inner
+            .approximate_batched(rust_batch_fn, cfg)
+            .map_err(py_err)
+    }
+
     fn values_map(&self, result: &AsvResult) -> HashMap<String, f64> {
         result
             .values
@@ -187,18 +227,31 @@ impl PyASVExplainer {
     /// Compute ASV values.
     ///
     /// Returns a `dict[str, float]` mapping node name to its ASV value.
-    /// For approximate methods, use `explain_with_diagnostics()` to also get ESS.
-    #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
+    /// Pass `value_fn_batch` instead of (or alongside) `value_fn` to amortize Python
+    /// GIL overhead over `batch_size` samples per call (useful for large models).
+    /// `value_fn_batch` takes `list[list[str]]` and returns `list[float]`.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn=None, method="auto", n_samples=10_000, seed=None,
+                        value_fn_batch=None, batch_size=256))]
     fn explain(
         &self,
         _py: Python<'_>,
-        value_fn: Py<PyAny>,
+        value_fn: Option<Py<PyAny>>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
+        value_fn_batch: Option<Py<PyAny>>,
+        batch_size: usize,
     ) -> PyResult<HashMap<String, f64>> {
-        let result = self.run(value_fn, method, n_samples, seed)?;
-        Ok(self.values_map(&result))
+        if let Some(batch_fn) = value_fn_batch {
+            Ok(self.values_map(&self.run_batch(batch_fn, method, n_samples, seed, batch_size)?))
+        } else if let Some(vfn) = value_fn {
+            Ok(self.values_map(&self.run(vfn, method, n_samples, seed)?))
+        } else {
+            Err(PyValueError::new_err(
+                "must provide either value_fn or value_fn_batch",
+            ))
+        }
     }
 
     /// Compute ASV values with diagnostics.
@@ -208,16 +261,30 @@ impl PyASVExplainer {
     ///   - `"ess"`: float | None — effective sample size (approx only)
     ///   - `"n_samples"`: int — orderings used
     ///   - `"is_exact"`: bool
-    #[pyo3(signature = (value_fn, method = "auto", n_samples = 10_000, seed = None))]
+    ///
+    /// Pass `value_fn_batch` to amortize Python GIL overhead over `batch_size` samples per call.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn=None, method="auto", n_samples=10_000, seed=None,
+                        value_fn_batch=None, batch_size=256))]
     fn explain_with_diagnostics<'py>(
         &self,
         py: Python<'py>,
-        value_fn: Py<PyAny>,
+        value_fn: Option<Py<PyAny>>,
         method: &str,
         n_samples: usize,
         seed: Option<u64>,
+        value_fn_batch: Option<Py<PyAny>>,
+        batch_size: usize,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let result = self.run(value_fn, method, n_samples, seed)?;
+        let result = if let Some(batch_fn) = value_fn_batch {
+            self.run_batch(batch_fn, method, n_samples, seed, batch_size)?
+        } else if let Some(vfn) = value_fn {
+            self.run(vfn, method, n_samples, seed)?
+        } else {
+            return Err(PyValueError::new_err(
+                "must provide either value_fn or value_fn_batch",
+            ));
+        };
         let ess_ratio = result
             .effective_sample_size
             .map(|e| e / result.n_samples as f64);
@@ -295,6 +362,79 @@ impl PyASVExplainer {
         d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
         d.set_item("method", "approx_adaptive")?;
+        d.set_item("converged", result.converged)?;
+        d.set_item("stderr", stderr_map)?;
+        Ok(d)
+    }
+
+    /// Adaptive batched approximate ASV: same convergence logic as `explain_adaptive`
+    /// but calls `value_fn_batch(list[list[str]]) -> list[float]` once per sampling batch.
+    ///
+    /// Each sampling batch of `batch_size` samples becomes one Python function call,
+    /// reducing GIL acquisition overhead for large models.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn_batch, min_samples=1_000, max_samples=100_000,
+                        batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None))]
+    fn explain_adaptive_batch<'py>(
+        &self,
+        py: Python<'py>,
+        value_fn_batch: Py<PyAny>,
+        min_samples: usize,
+        max_samples: usize,
+        batch_size: usize,
+        rel_tol: f64,
+        ess_ratio_min: f64,
+        seed: Option<u64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let names = &self.names;
+        let rust_batch_fn = move |coalitions: &[Vec<NodeId>]| -> Result<Vec<f64>, CausasvError> {
+            Python::attach(|py| {
+                let py_coalitions: Vec<Vec<&str>> = coalitions
+                    .iter()
+                    .map(|coal| {
+                        coal.iter()
+                            .map(|id| names[id.0 as usize].as_str())
+                            .collect()
+                    })
+                    .collect();
+                value_fn_batch
+                    .call1(py, (py_coalitions,))
+                    .and_then(|r| r.extract::<Vec<f64>>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
+        };
+        let config = AdaptiveSamplingConfig {
+            min_samples,
+            max_samples,
+            batch_size,
+            rel_tol,
+            ess_ratio_min,
+            seed,
+        };
+        let result = self
+            .inner
+            .approximate_adaptive_batched(rust_batch_fn, config)
+            .map_err(py_err)?;
+        let ess_ratio = result
+            .effective_sample_size
+            .map(|e| e / result.n_samples as f64);
+        let stderr_map: HashMap<String, f64> = result
+            .stderr
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .map(|(id, &v)| (self.names[id.0 as usize].clone(), v))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let d = PyDict::new(py);
+        d.set_item("values", self.values_map(&result))?;
+        d.set_item("ess", result.effective_sample_size)?;
+        d.set_item("ess_ratio", ess_ratio)?;
+        d.set_item("n_samples", result.n_samples)?;
+        d.set_item("seed", result.seed)?;
+        d.set_item("is_exact", result.is_exact)?;
+        d.set_item("method", "approx_adaptive_batch")?;
         d.set_item("converged", result.converged)?;
         d.set_item("stderr", stderr_map)?;
         Ok(d)
