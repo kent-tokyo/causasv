@@ -5,6 +5,19 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.1] — 2026-06
+
+### Changed
+- `src/approx.rs`: seeded serial `approximate_asv` path now collects all samples
+  before processing, applying per-batch log-weight normalization (`max_log_w` subtraction)
+  consistent with the batched, adaptive, and adaptive-batched paths
+
+### Docs
+- README badges reduced from 11 to 7 (removed CodeQL, Security, Downloads, GitHub release)
+- README_ja and README_zh synced to v0.8.0 feature set (were at v0.6.0)
+
+---
+
 ## [0.8.0] — 2026-06
 
 ### Changed
