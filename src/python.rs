@@ -307,6 +307,7 @@ impl PyCausalDAG {
             .all_nodes()
             .filter(|&id| self.inner.children_raw(id).is_empty())
             .count();
+        // max_depth = number of topological layers - 1
         let max_depth = {
             let mut remaining_in = in_deg.clone();
             let mut depth = 0usize;
