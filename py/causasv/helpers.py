@@ -48,3 +48,75 @@ def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=Non
         return predict_fn(row.reshape(1, -1))
 
     return value_fn
+
+
+class TabularExplainer:
+    """High-level explainer for tabular models with a causal DAG.
+
+    Wraps ``ASVExplainer`` with a sklearn-compatible model and a background
+    dataset so users can call ``explain_instance()`` without constructing a
+    value function by hand.
+
+    Example::
+
+        from causasv import TabularExplainer, CausalDAG
+
+        dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
+        explainer = TabularExplainer.from_model(
+            model=clf,
+            dag=dag,
+            background=X_train,
+            feature_names=["education", "income", "risk_score"],
+        )
+        values = explainer.explain_instance(X_test[0], method="auto")
+    """
+
+    def __init__(self, explainer, model, background, feature_names, *, predict_fn=None):
+        self._explainer = explainer
+        self._model = model
+        self._background = background
+        self._feature_names = list(feature_names)
+        self._predict_fn = predict_fn
+
+    @classmethod
+    def from_model(cls, model, dag, background, feature_names, *, predict_fn=None):
+        """Construct from a sklearn-compatible model and a causal DAG.
+
+        Args:
+            model: Any object with ``predict_proba(X)`` or ``predict(X)``.
+            dag: A ``CausalDAG`` instance.
+            background: Reference dataset used for absent-feature baseline
+                (column means). Array-like, shape (n_samples, n_features).
+            feature_names: Ordered list of feature names.
+            predict_fn: Optional callable ``(row: ndarray shape (1, n)) -> float``.
+        """
+        from .causasv import ASVExplainer
+
+        return cls(
+            ASVExplainer(dag), model, background, feature_names, predict_fn=predict_fn
+        )
+
+    def explain_instance(self, x, method="auto", **kwargs):
+        """Compute ASV for a single instance ``x``.
+
+        Args:
+            x: The instance to explain — array-like, shape (n_features,).
+            method: Passed to ``ASVExplainer.explain()`` (default ``"auto"``).
+            **kwargs: Additional keyword arguments forwarded to ``explain()``.
+
+        Returns:
+            ``dict[str, float]`` mapping feature name to its ASV value.
+        """
+        value_fn = make_tabular_value_fn(
+            self._model, x, self._background, self._feature_names,
+            predict_fn=self._predict_fn,
+        )
+        return self._explainer.explain(value_fn, method=method, **kwargs)
+
+    def explain_instance_with_diagnostics(self, x, method="auto", **kwargs):
+        """Like ``explain_instance`` but returns the full diagnostics dict."""
+        value_fn = make_tabular_value_fn(
+            self._model, x, self._background, self._feature_names,
+            predict_fn=self._predict_fn,
+        )
+        return self._explainer.explain_with_diagnostics(value_fn, method=method, **kwargs)

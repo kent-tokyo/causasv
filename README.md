@@ -123,18 +123,31 @@ import networkx as nx
 G = nx.DiGraph(dag.edges())
 ```
 
-Wrap a sklearn model as a value function with `make_tabular_value_fn` (requires numpy):
+Use `TabularExplainer` for a higher-level API with sklearn-compatible models (requires numpy):
+
+```python
+from causasv import CausalDAG, TabularExplainer
+
+dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
+
+explainer = TabularExplainer.from_model(
+    model=my_classifier,      # any sklearn-compatible model
+    dag=dag,
+    background=X_train,       # reference dataset; column means = absent-feature baseline
+    feature_names=["education", "income", "risk_score"],
+)
+values = explainer.explain_instance(X_test[0], method="auto")
+# values: dict[str, float] mapping feature name → ASV value
+```
+
+Or build the value function directly with `make_tabular_value_fn` for full control:
 
 ```python
 from causasv import make_tabular_value_fn
 
-value_fn = make_tabular_value_fn(
-    model=my_classifier,      # any sklearn-compatible model
-    x=X_test[0],             # instance to explain, shape (n_features,)
-    background=X_train,      # reference dataset; column means = absent-feature baseline
-    feature_names=["education", "income", "risk_score"],
-)
-values = explainer.explain(value_fn, method="auto")
+value_fn = make_tabular_value_fn(model=my_classifier, x=X_test[0],
+                                  background=X_train, feature_names=[...])
+values = ASVExplainer(dag).explain(value_fn, method="auto")
 ```
 
 ## Exact vs Approximate
@@ -179,7 +192,7 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | Rooted-tree exact DP | ✓ | ✓ | Experimental |
 | General DAG exact DP (n ≤ 20) | ✓ | ✓ | Experimental |
 | Approximate ASV with ESS | ✓ | ✓ | Experimental |
-| Adaptive approximation | planned | planned | Planned (v0.6) |
+| Adaptive approximation | ✓ | ✓ | Experimental |
 | sklearn / NumPy helper | — | ✓ | Experimental |
 | Graph export (DOT / networkx) | planned | ✓ | Experimental |
 
