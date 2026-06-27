@@ -108,7 +108,10 @@ class TabularExplainer:
             ``dict[str, float]`` mapping feature name to its ASV value.
         """
         value_fn = make_tabular_value_fn(
-            self._model, x, self._background, self._feature_names,
+            self._model,
+            x,
+            self._background,
+            self._feature_names,
             predict_fn=self._predict_fn,
         )
         return self._explainer.explain(value_fn, method=method, **kwargs)
@@ -116,7 +119,12 @@ class TabularExplainer:
     def explain_instance_with_diagnostics(self, x, method="auto", **kwargs):
         """Like ``explain_instance`` but returns the full diagnostics dict."""
         value_fn = make_tabular_value_fn(
-            self._model, x, self._background, self._feature_names,
+            self._model,
+            x,
+            self._background,
+            self._feature_names,
             predict_fn=self._predict_fn,
         )
-        return self._explainer.explain_with_diagnostics(value_fn, method=method, **kwargs)
+        return self._explainer.explain_with_diagnostics(
+            value_fn, method=method, **kwargs
+        )

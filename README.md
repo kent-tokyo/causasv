@@ -213,7 +213,7 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | Rooted tree exact algorithm | ✓ `exact_tree` (order-ideal DP + hook-length formula) |
 | General DAG exact DP | ✓ `exact_dag` (order-ideal DP, n ≤ 20) |
 | Importance-sampling approximation for general DAGs | ✓ `approx` |
-| General DAG optimized DP | planned |
+| Sparse/memory-limited exact DAG DP | planned (`exact_dag_sparse`, n > 20) |
 | Causal discovery | — out of scope |
 
 - `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
