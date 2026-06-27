@@ -80,6 +80,89 @@ impl PyCausalDAG {
             .collect()
     }
 
+    /// Return a JSON string representing the DAG.
+    ///
+    /// Format: `{"nodes":["a","b"],"edges":[{"from":"a","to":"b"}]}`
+    fn to_json(&self) -> String {
+        let nodes: Vec<String> = self
+            .inner
+            .all_nodes()
+            .map(|id| format!("\"{}\"", self.inner.node_name(id).unwrap()))
+            .collect();
+        let edges: Vec<String> = self
+            .inner
+            .all_nodes()
+            .flat_map(|from_id| {
+                let from = self.inner.node_name(from_id).unwrap().to_string();
+                self.inner
+                    .children_raw(from_id)
+                    .iter()
+                    .map(move |&to_id| {
+                        format!(
+                            "{{\"from\":\"{}\",\"to\":\"{}\"}}",
+                            from,
+                            self.inner.node_name(to_id).unwrap()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        format!(
+            "{{\"nodes\":[{}],\"edges\":[{}]}}",
+            nodes.join(","),
+            edges.join(",")
+        )
+    }
+
+    /// Construct a DAG from the JSON format produced by `to_json()`.
+    ///
+    /// Accepts `{"nodes":[...],"edges":[{"from":"a","to":"b"},...]}`
+    /// Unknown keys are ignored. Nodes listed only in `"nodes"` (no edges) are added as isolates.
+    #[staticmethod]
+    fn from_json(s: &str) -> PyResult<Self> {
+        // ponytail: hand-rolled parser — avoids serde dependency for simple known format
+        let mut inner = RustDag::new();
+        // Extract nodes array content
+        if let Some(nodes_start) = s.find("\"nodes\":[") {
+            let rest = &s[nodes_start + 9..];
+            if let Some(end) = rest.find(']') {
+                let names_raw = &rest[..end];
+                for part in names_raw.split(',') {
+                    let name = part.trim().trim_matches('"');
+                    if !name.is_empty() {
+                        inner.add_node(name);
+                    }
+                }
+            }
+        }
+        // Extract edges
+        let mut search = s;
+        while let Some(from_pos) = search.find("\"from\":\"") {
+            let after_from = &search[from_pos + 8..];
+            let from_end = after_from.find('"').ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "malformed JSON: missing closing quote after from",
+                )
+            })?;
+            let from_name = &after_from[..from_end];
+            let to_start = after_from[from_end..].find("\"to\":\"").ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("malformed JSON: missing 'to' key")
+            })?;
+            let after_to = &after_from[from_end + to_start + 6..];
+            let to_end = after_to.find('"').ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "malformed JSON: missing closing quote after to",
+                )
+            })?;
+            let to_name = &after_to[..to_end];
+            let from_id = inner.add_node(from_name);
+            let to_id = inner.add_node(to_name);
+            inner.add_edge(from_id, to_id).map_err(py_err)?;
+            search = &after_to[to_end..];
+        }
+        Ok(Self { inner })
+    }
+
     /// Return a Graphviz DOT representation of the DAG.
     fn to_dot(&self) -> String {
         let mut s = String::from("digraph {\n");
