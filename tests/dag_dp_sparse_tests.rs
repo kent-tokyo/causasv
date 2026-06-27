@@ -98,3 +98,29 @@ fn test_sparse_memory_mb_reported() {
     let mb = result.memory_mb.unwrap();
     assert!(mb > 0.0, "memory_mb should be positive");
 }
+
+/// Antichain on n=21 nodes has 21! ≈ 5.1×10^19 > u64::MAX (1.8×10^19).
+/// exact_dag_sparse with max_nodes=28 should hit Overflow, not silently wrap.
+/// Marked ignore because BFS visits 2^21 ≈ 2M states (~32 s in debug builds).
+#[test]
+#[ignore = "slow: 2^21 BFS states; run with --ignored to verify overflow guard"]
+fn test_sparse_overflow_on_large_antichain() {
+    use causasv::ExactDagConfig;
+
+    let mut dag = Dag::new();
+    for i in 0..21usize {
+        dag.add_node(&format!("n{i}"));
+    }
+    // No edges → antichain; L(G) = 21! >> u64::MAX
+    let explainer = AsvExplainer::new(dag);
+    let config = ExactDagConfig {
+        max_nodes: 28,
+        memory_limit_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB — high enough not to OOM
+    };
+    let result = explainer.exact_dag_sparse_with_config(additive_value, &config);
+    match result {
+        Err(causasv::CausasvError::Overflow(_)) => {} // expected
+        Err(e) => panic!("expected Overflow, got {e:?}"),
+        Ok(_) => panic!("expected Overflow error but got Ok — overflow guard is missing"),
+    }
+}
