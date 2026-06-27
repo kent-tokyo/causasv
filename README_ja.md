@@ -203,7 +203,7 @@ values = explainer.explain(value_fn, method="auto")
 | 有根木の厳密 DP | ✓ | ✓ | 実験的 |
 | 一般 DAG の厳密 DP（n ≤ 20） | ✓ | ✓ | 実験的 |
 | ESS 付き近似 ASV | ✓ | ✓ | 実験的 |
-| 適応型近似 | 計画中 | 計画中 | 計画中（v0.6） |
+| 適応型近似 | ✓ | ✓ | 実験的 |
 | sklearn / NumPy ヘルパー | — | ✓ | 実験的 |
 | グラフエクスポート（DOT / networkx） | 計画中 | ✓ | 実験的 |
 
