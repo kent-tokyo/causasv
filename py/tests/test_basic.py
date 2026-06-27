@@ -222,6 +222,34 @@ def test_dag_to_dot():
     assert dot.strip().endswith("}")
 
 
+def test_dag_ancestors():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert sorted(dag.ancestors("c")) == ["a", "b"]
+    assert dag.ancestors("b") == ["a"]
+    assert dag.ancestors("a") == []
+
+
+def test_dag_descendants():
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    assert sorted(dag.descendants("a")) == ["b", "c"]
+    assert dag.descendants("b") == ["c"]
+    assert dag.descendants("c") == []
+
+
+def test_dag_topological_layers():
+    # chain: a -> b -> c should give [[a], [b], [c]]
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    layers = dag.topological_layers()
+    assert layers == [["a"], ["b"], ["c"]]
+
+    # diamond: a -> b, a -> c, b -> d, c -> d
+    dag2 = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
+    layers2 = dag2.topological_layers()
+    assert layers2[0] == ["a"]
+    assert sorted(layers2[1]) == ["b", "c"]
+    assert layers2[2] == ["d"]
+
+
 def test_explain_adaptive_keys():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
