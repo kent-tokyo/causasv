@@ -166,6 +166,18 @@ def test_auto_matches_explicit_exact():
     assert v_auto == v_exact
 
 
+def test_auto_selected_method_diagnostics():
+    # chain n=3: auto should dispatch to exact (n <= 8)
+    dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
+    info = ASVExplainer(dag).explain_with_diagnostics(
+        lambda n: float(len(n)), method="auto"
+    )
+    assert info["method"] == "auto"
+    assert info["selected_method"] == "exact"
+    assert info["is_exact"] is True
+    assert info["fallback_from"] is None
+
+
 def test_exact_dag_method():
     # Diamond DAG: a->b, a->c, b->d, c->d — general DAG, not a tree.
     dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
@@ -197,6 +209,7 @@ def test_explain_with_diagnostics_keys():
         "memory_mb",
         "fallback_from",
         "fallback_reason",
+        "selected_method",
     }
     assert expected_keys == set(info.keys())
 

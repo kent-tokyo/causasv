@@ -148,6 +148,7 @@ where
         memory_mb: Some(memory_mb),
         fallback_from: None,
         fallback_reason: None,
+        method_used: None,
     };
 
     Ok((result, n_order_ideals, state_ratio, memory_mb))

@@ -42,6 +42,8 @@ pub struct AsvResult {
     pub fallback_from: Option<String>,
     /// Reason for the fallback (error message). None normally.
     pub fallback_reason: Option<String>,
+    /// Actual method dispatched by `auto()`; None when method was caller-specified.
+    pub method_used: Option<&'static str>,
 }
 
 /// Entry point for ASV computation over a causal DAG.
@@ -114,6 +116,7 @@ impl AsvExplainer {
             memory_mb: None,
             fallback_from: None,
             fallback_reason: None,
+            method_used: None,
         })
     }
 
@@ -201,27 +204,39 @@ impl AsvExplainer {
         self.dag.validate()?;
         let n = self.dag.node_count();
         if n <= 8 {
-            self.exact(value_fn)
+            let mut r = self.exact(value_fn)?;
+            r.method_used = Some("exact");
+            Ok(r)
         } else if crate::tree::find_rooted_tree_root(&self.dag).is_ok() {
-            self.exact_tree(value_fn)
+            let mut r = self.exact_tree(value_fn)?;
+            r.method_used = Some("exact_tree");
+            Ok(r)
         } else if n <= 20 {
-            self.exact_dag(value_fn)
+            let mut r = self.exact_dag(value_fn)?;
+            r.method_used = Some("exact_dag");
+            Ok(r)
         } else if n <= 28 {
             // Use a closure to borrow value_fn without consuming it, so we can
             // fall back to approximate if sparse DP hits the memory or overflow limit.
             match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default()) {
-                Ok(r) => Ok(r),
+                Ok(mut r) => {
+                    r.method_used = Some("exact_dag_sparse");
+                    Ok(r)
+                }
                 Err(CausasvError::InvalidConfig(ref msg))
                 | Err(CausasvError::Overflow(ref msg)) => {
                     let mut r = self.approximate(value_fn, config)?;
                     r.fallback_from = Some("exact_dag_sparse".to_string());
                     r.fallback_reason = Some(msg.clone());
+                    r.method_used = Some("approx");
                     Ok(r)
                 }
                 Err(e) => Err(e),
             }
         } else {
-            self.approximate(value_fn, config)
+            let mut r = self.approximate(value_fn, config)?;
+            r.method_used = Some("approx");
+            Ok(r)
         }
     }
 
