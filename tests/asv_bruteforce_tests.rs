@@ -1,4 +1,4 @@
-use causasv::{AsvExplainer, Dag, NodeId};
+use causasv::{AsvExplainer, Dag, ExactDagConfig, NodeId, SamplingConfig};
 
 fn chain_3() -> (Dag, NodeId, NodeId, NodeId) {
     let mut dag = Dag::new();
@@ -212,4 +212,61 @@ fn test_auto_general_dag_uses_approx() {
     // n=9 general DAG: auto now uses exact_dag (n ≤ 20 → exact DP)
     assert!(auto.is_exact);
     assert!(auto.effective_sample_size.is_none());
+}
+
+/// exact_dag_sparse_with_config must return InvalidConfig when memory limit is tiny.
+/// This exercises the error path that auto() catches for fallback.
+#[test]
+fn test_sparse_memory_limit_triggers_invalid_config() {
+    let mut dag = Dag::new();
+    for i in 0..25usize {
+        dag.add_node(&format!("n{i}"));
+    }
+    let explainer = AsvExplainer::new(dag);
+    let config = ExactDagConfig {
+        max_nodes: 28,
+        memory_limit_bytes: 1, // immediately exceeded after first expansion
+    };
+    let result = explainer.exact_dag_sparse_with_config(|c| Ok(c.len() as f64), &config);
+    assert!(
+        matches!(result, Err(causasv::CausasvError::InvalidConfig(_))),
+        "expected InvalidConfig on tiny memory limit, got {result:?}"
+    );
+}
+
+/// auto() falls back gracefully on sparse DAGs in the n ∈ (20, 28] range.
+/// Tests that the sparse → approx path (triggered by memory or overflow errors)
+/// returns a valid result satisfying the efficiency axiom.
+#[test]
+fn test_auto_sparse_range_dag_succeeds() {
+    // n=22 chain: in the (20, 28] range. Chain → rooted tree → exact_tree path.
+    // Use a non-tree DAG at n=22 to force the sparse path.
+    let mut dag = Dag::new();
+    for i in 0..22usize {
+        dag.add_node(&format!("n{i}"));
+    }
+    // Add one back-edge to break rooted-tree structure (make it a general DAG)
+    // n0→n2 creates a non-tree: n0 has 2 children (n1 and n2 via both edges)
+    for i in 0..21 {
+        dag.add_edge(NodeId(i as u32), NodeId((i + 1) as u32))
+            .unwrap();
+    }
+    // Add parallel edge n0→n2 to make it non-tree
+    dag.add_edge(NodeId(0), NodeId(2)).unwrap();
+
+    let explainer = AsvExplainer::new(dag);
+    let result = explainer
+        .auto(
+            |c| Ok(c.len() as f64),
+            SamplingConfig::new(500).with_seed(0),
+        )
+        .unwrap();
+
+    // Chain with extra edge still has manageable order ideals for sparse DP
+    // It doesn't matter if it used sparse or approx — just that it succeeded
+    let total: f64 = result.values.values().sum();
+    assert!(
+        (total - 22.0).abs() < 1e-9,
+        "efficiency axiom: expected 22.0, got {total}"
+    );
 }
