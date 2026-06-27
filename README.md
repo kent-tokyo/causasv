@@ -260,6 +260,13 @@ The approximate estimator uses self-normalized importance sampling to correct fo
 
 The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_samples means IS weights are uniform and the estimate is reliable; ESS ≪ n_samples indicates high weight variance.
 
+**Approximation diagnostics checklist** — before trusting an approximate result:
+1. `info["ess_ratio"]` ≥ 0.1
+2. Run `explain_stability()` with multiple seeds; `rank_stability` ≥ 0.9
+3. Use `explain_adaptive()` if you need per-feature stderr and CI bounds
+
+See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretation, and the full checklist.
+
 ## Status
 
 Experimental — v0.8.1. Public API may change before v1.0.

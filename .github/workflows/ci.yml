@@ -24,14 +24,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Check version consistency (Cargo.toml / py/pyproject.toml / CITATION.cff)
+      - name: Check version consistency (Cargo.toml / py/pyproject.toml / CITATION.cff / README.md)
         run: |
           RUST=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
           PY=$(grep '^version' py/pyproject.toml | grep -oP '"\K[^"]+')
           CIT=$(grep '^version:' CITATION.cff | awk '{print $2}')
-          echo "Rust=$RUST  Python=$PY  Citation=$CIT"
-          [ "$RUST" = "$PY" ] && [ "$RUST" = "$CIT" ] || \
-            { echo "ERROR: version mismatch — bump all three files together"; exit 1; }
+          README=$(grep -oP 'Experimental — v\K[0-9]+\.[0-9]+\.[0-9]+' README.md | head -1)
+          echo "Rust=$RUST  Python=$PY  Citation=$CIT  README=$README"
+          [ "$RUST" = "$PY" ] && [ "$RUST" = "$CIT" ] && [ "$RUST" = "$README" ] || \
+            { echo "ERROR: version mismatch — bump Cargo.toml, py/pyproject.toml, CITATION.cff, and README.md together"; exit 1; }
 
   python:
     runs-on: ubuntu-latest
