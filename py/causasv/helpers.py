@@ -1,5 +1,97 @@
 """Pure-Python helpers for common causasv patterns."""
 
+from causasv import ASVExplainer
+
+
+class ASVEnsembleExplainer:
+    """Compute ASV over multiple user-supplied DAGs and summarize sensitivity.
+
+    Runs one ASVExplainer per DAG and returns per-DAG values alongside
+    mean, standard deviation, and rank stability (mean pairwise Kendall tau).
+
+    Does NOT perform causal discovery — all DAGs must be supplied by the caller.
+
+    Args:
+        dags: List of CausalDAG objects. Must share the same node names.
+
+    Example::
+
+        from causasv import CausalDAG
+        from causasv.helpers import ASVEnsembleExplainer
+
+        dag1 = CausalDAG.from_edges([("A", "B"), ("B", "C")])
+        dag2 = CausalDAG.from_edges([("A", "B"), ("A", "C")])
+        ensemble = ASVEnsembleExplainer([dag1, dag2])
+        result = ensemble.explain_with_sensitivity(value_fn, method="exact")
+        # result["mean_values"], result["std_values"], result["rank_stability"]
+    """
+
+    def __init__(self, dags):
+        self._explainers = [ASVExplainer(dag) for dag in dags]
+
+    def explain_with_sensitivity(self, value_fn, **kwargs):
+        """Compute ASV across all DAGs and return aggregated sensitivity metrics.
+
+        Args:
+            value_fn: Coalition value function ``(list[str]) -> float``.
+            **kwargs: Forwarded to ``ASVExplainer.explain()`` (method, n_samples, seed, …).
+
+        Returns:
+            dict with keys:
+            - ``"mean_values"``: dict[str, float] — mean ASV per feature
+            - ``"std_values"``: dict[str, float] — std ASV per feature
+            - ``"rank_stability"``: float — mean Kendall tau across all DAG pairs (1 = full agreement)
+            - ``"per_dag_values"``: list[dict[str, float]] — one dict per DAG
+        """
+        per_dag = [e.explain(value_fn, **kwargs) for e in self._explainers]
+        if not per_dag:
+            return {
+                "mean_values": {},
+                "std_values": {},
+                "rank_stability": 1.0,
+                "per_dag_values": [],
+            }
+        features = sorted(per_dag[0].keys())
+        k = len(per_dag)
+        mean = {f: sum(d[f] for d in per_dag) / k for f in features}
+        std = {
+            f: (sum((d[f] - mean[f]) ** 2 for d in per_dag) / k) ** 0.5 for f in features
+        }
+        rank_stability = _mean_kendall_tau(per_dag, features)
+        return {
+            "mean_values": mean,
+            "std_values": std,
+            "rank_stability": rank_stability,
+            "per_dag_values": per_dag,
+        }
+
+
+def _kendall_tau(a, b, features):
+    """Compute Kendall tau between two dicts of feature values. O(n^2)."""
+    n = len(features)
+    concordant = discordant = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            xi, xj = a[features[i]], a[features[j]]
+            yi, yj = b[features[i]], b[features[j]]
+            s = (xi - xj) * (yi - yj)
+            if s > 0:
+                concordant += 1
+            elif s < 0:
+                discordant += 1
+    total = n * (n - 1) / 2
+    return (concordant - discordant) / total if total > 0 else 1.0
+
+
+def _mean_kendall_tau(per_dag, features):
+    """Mean pairwise Kendall tau across all DAG pairs. Returns 1.0 for < 2 DAGs."""
+    taus = [
+        _kendall_tau(per_dag[i], per_dag[j], features)
+        for i in range(len(per_dag))
+        for j in range(i + 1, len(per_dag))
+    ]
+    return sum(taus) / len(taus) if taus else 1.0
+
 
 def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=None):
     """Wrap a sklearn-compatible model as a causasv value function.
