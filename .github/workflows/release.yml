@@ -32,3 +32,78 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+
+  # ── Python wheels ─────────────────────────────────────────────────────────────
+
+  linux-wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: py
+          command: build
+          args: --release --out ../dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-wheels
+          path: dist
+
+  macos-wheels:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: py
+          target: universal2-apple-darwin
+          command: build
+          args: --release --out ../dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-wheels
+          path: dist
+
+  windows-wheels:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: py
+          command: build
+          args: --release --out ../dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-wheels
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: py
+          command: sdist
+          args: --out ../dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  publish-pypi:
+    needs: [linux-wheels, macos-wheels, windows-wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/causasv
+    permissions:
+      id-token: write   # Trusted Publisher (OIDC) — no token secret needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
