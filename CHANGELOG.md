@@ -5,6 +5,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.2] — 2026-06
+
+### Performance
+- `dag_dp.rs`: replace `HashMap<u64,f64>` value cache with `Vec<f64>[mask]` (NaN sentinel, n≤20 → ≤8MB); hoist `v(S)` lookup outside candidate-node loop; convert `dp_fwd`/`dp_ind`/ASV accumulation inner loops from O(n) full scan to bit iteration over relevant set bits — **−85 to −90% on exact_dag paths**
+- `sampler.rs`: incremental frontier in `sample_one` (build once, maintain via `swap_remove` + child push — O(n+edges)/sample vs O(n²)); add `SamplerScratch` + `sample_one_into` for per-worker scratch reuse in all parallel/batched/adaptive paths (2 of 3 per-sample Vec allocs eliminated) — **−70 to −80% on approx paths**
+- `cache.rs`: `mask_to_coalition` now uses `trailing_zeros` loop over set bits instead of 0..64 scan
+
+### Tests
+- `tests/approx_accuracy_tests.rs`: golden corpus — 9 tests comparing approx vs exact on chain, fork, collider, diamond, two-parallel-chains, balanced-tree with additive and weighted value functions
+
+### Benchmarks
+- Added `approx_diamond_10_10k_seeded` and `approx_balanced_tree_15_10k_seeded` criterion groups
+
+---
+
 ## [0.8.1] — 2026-06
 
 ### Changed
