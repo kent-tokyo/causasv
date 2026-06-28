@@ -235,7 +235,7 @@ impl AsvExplainer {
     /// Dispatch rules:
     /// - n ≤ 8: `exact` — brute-force, lowest overhead for small n
     /// - n > 8, rooted directed tree: `exact_tree` — order-ideal DP
-    /// - 8 < n ≤ 20: `exact_dag` — dense order-ideal DP (O(2^n × n))
+    /// - 8 < n ≤ 20: `exact_dag_sparse` if edge_count ≤ 2n (sparse heuristic), else `exact_dag`
     /// - 20 < n ≤ 28: `exact_dag_sparse` — sparse BFS over order ideals;
     ///   falls back to `approximate` on memory-limit or overflow errors
     /// - n > 28: `approximate` — IS-weighted sampling
@@ -256,9 +256,28 @@ impl AsvExplainer {
             r.method_used = Some("exact_tree");
             Ok(r)
         } else if n <= 20 {
-            let mut r = self.exact_dag(value_fn)?;
-            r.method_used = Some("exact_dag");
-            Ok(r)
+            let m = self.dag.edge_count();
+            if m <= 2 * n {
+                // Sparse DAG: try sparse DP first; fall back to dense on the rare Overflow edge case.
+                // Use a closure to borrow value_fn without consuming it (same pattern as n<=28 branch).
+                match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default())
+                {
+                    Ok(mut r) => {
+                        r.method_used = Some("exact_dag_sparse");
+                        Ok(r)
+                    }
+                    Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
+                        let mut r = self.exact_dag(value_fn)?;
+                        r.method_used = Some("exact_dag");
+                        Ok(r)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                let mut r = self.exact_dag(value_fn)?;
+                r.method_used = Some("exact_dag");
+                Ok(r)
+            }
         } else if n <= 28 {
             // Use a closure to borrow value_fn without consuming it, so we can
             // fall back to approximate if sparse DP hits the memory or overflow limit.

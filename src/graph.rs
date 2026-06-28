@@ -90,6 +90,10 @@ impl Dag {
         self.names.len()
     }
 
+    pub(crate) fn edge_count(&self) -> usize {
+        self.children.iter().map(|c| c.len()).sum()
+    }
+
     pub fn node_name(&self, id: NodeId) -> Option<&str> {
         self.names.get(id.0 as usize).map(String::as_str)
     }

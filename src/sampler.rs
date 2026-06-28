@@ -181,6 +181,7 @@ pub(crate) fn sample_one_into(
     log_q
 }
 
+#[cfg(test)]
 pub(crate) fn sample_one(dag: &Dag, rng: &mut StdRng) -> SampledOrdering {
     let n = dag.node_count();
     let mut in_deg = dag.in_degrees();
