@@ -244,7 +244,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 | `exact_dag_sparse` | 疎な DAG、n ≤ 28；有効な順序イデアルのみ BFS | `explainer.exact_dag_sparse(value_fn)` |
 | `approx` | 任意の DAG（n > 28 またはメモリ制限超過）；IS サンプリング | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` ディスパッチ：n ≤ 8 → `exact`；有根木 → `exact_tree`；n ≤ 20 → `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；それ以外 → `approx`。
+`auto` ディスパッチ：n ≤ 8 → `exact`；有根木 → `exact_tree`；n ≤ 20 → edge_count ≤ 2n なら `exact_dag_sparse` そうでなければ `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；それ以外 → `approx`。
 
 `exact_dag_sparse` は有効な順序イデアル（すべてのノードの親も存在する集合）のみを訪問します。疎な DAG では 2^n よりはるかに少ない状態で厳密計算が可能です。`n_order_ideals`・`state_ratio`・`memory_mb` の診断値を返します。
 
@@ -252,7 +252,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## ステータス
 
-実験的 — v0.8.2。v1.0 以前に公開 API が変更される可能性があります。
+実験的 — v0.8.3。v1.0 以前に公開 API が変更される可能性があります。
 
 ## アルゴリズムの状況
 
