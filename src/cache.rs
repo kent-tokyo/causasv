@@ -3,11 +3,14 @@ use std::collections::HashMap;
 use crate::error::CausasvError;
 use crate::graph::NodeId;
 
-pub(crate) fn mask_to_coalition(mask: u64) -> Vec<NodeId> {
-    (0..64u32)
-        .filter(|&i| mask & (1u64 << i) != 0)
-        .map(NodeId)
-        .collect()
+pub(crate) fn mask_to_coalition(mut mask: u64) -> Vec<NodeId> {
+    let mut out = Vec::with_capacity(mask.count_ones() as usize);
+    while mask != 0 {
+        let i = mask.trailing_zeros();
+        out.push(NodeId(i));
+        mask &= mask - 1; // clear lowest set bit
+    }
+    out
 }
 
 pub(crate) fn vec_to_mask(nodes: &[NodeId]) -> u64 {

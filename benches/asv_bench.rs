@@ -339,6 +339,38 @@ fn bench_approx_parallel_chain_20(c: &mut Criterion) {
     group.finish();
 }
 
+// ── approx: shape variants at 10k seeded ─────────────────────────────────────
+
+fn bench_approx_diamond_10_10k_seeded(c: &mut Criterion) {
+    let dag = make_diamond_dag(8); // n=10: src + 8 middles + snk
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("approx_diamond_10_10k_seeded", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+}
+
+fn bench_approx_tree_15_10k_seeded(c: &mut Criterion) {
+    let dag = make_balanced_tree(3); // n=15
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("approx_balanced_tree_15_10k_seeded", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+}
+
 // ── approx vs approx_adaptive ────────────────────────────────────────────────
 
 fn bench_approx_vs_adaptive_chain_10(c: &mut Criterion) {
@@ -389,6 +421,8 @@ criterion_group!(
     bench_approx_tree,
     bench_approx_vs_batched_chain_10,
     bench_approx_parallel_chain_20,
+    bench_approx_diamond_10_10k_seeded,
+    bench_approx_tree_15_10k_seeded,
     bench_approx_vs_adaptive_chain_10,
 );
 criterion_main!(benches);
