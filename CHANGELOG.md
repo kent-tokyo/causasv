@@ -5,6 +5,25 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.3] — 2026-06
+
+### Performance
+- `approx.rs`: eliminate 2 of 3 per-sample Vec allocations in the seeded sequential `approximate_asv` path by reusing `SamplerScratch` (was the only approx path not using `sample_one_into`); now consistent with all parallel / batched / adaptive paths
+- `approx.rs`: replace per-batch `HashSet<u64>` coalition dedup in `approximate_asv_batched` and `approximate_asv_adaptive_batched` with `Vec<u64> + sort_unstable + dedup`; cheaper for u64 keys without hash allocation overhead
+- `asv.rs` / `graph.rs`: `auto()` dispatch for 8 < n ≤ 20 now uses `exact_dag_sparse` first when `edge_count ≤ 2n` (sparse heuristic), falling back to `exact_dag` on failure; chains, trees, and other sparse DAGs in this range route to the sparse path which visits far fewer order ideals
+
+### Internals
+- `graph.rs`: add `pub(crate) edge_count()` helper used by the auto dispatch heuristic
+- `sampler.rs`: mark `sample_one` as `#[cfg(test)]`; only test code uses it now
+
+### Cargo
+- `Cargo.toml`: add `rust-version = "1.85"` (edition 2024 MSRV); makes the minimum Rust version explicit and produces a clear error for older toolchains
+
+### Benchmarks
+- `benches/asv_bench.rs`: add `approx_chain_20_10k_seeded`, `approx_balanced_tree_31_10k_seeded`, `adaptive_batch_diamond_10`, `exact_dag_vs_sparse_chain_16` to measure the above improvements
+
+---
+
 ## [0.8.2] — 2026-06
 
 ### Performance

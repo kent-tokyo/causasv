@@ -266,7 +266,7 @@ values = ASVExplainer(dag).explain(value_fn, method="auto")
 | `exact_dag_sparse` | Sparse DAGs, n ≤ 28; BFS over valid order ideals only | `explainer.exact_dag_sparse(value_fn)` |
 | `approx` | Any DAG (n > 28 or memory limit exceeded); IS sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; else → `approx`.
+`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag_sparse` if edge_count ≤ 2n else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; else → `approx`.
 
 `exact_dag_sparse` visits only valid order ideals (sets where every node's parents are also present). For sparse DAGs (chains, trees, few branching points), this can be orders of magnitude fewer states than 2^n. Returns `n_order_ideals`, `state_ratio`, and `memory_mb` diagnostics.
 
@@ -283,7 +283,7 @@ See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretat
 
 ## Status
 
-Experimental — v0.8.2. Public API may change before v1.0.
+Experimental — v0.8.3. Public API may change before v1.0.
 
 ## Algorithm status
 

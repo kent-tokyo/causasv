@@ -244,7 +244,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 | `exact_dag_sparse` | 稀疏 DAG，n ≤ 28；仅对有效顺序理想 BFS | `explainer.exact_dag_sparse(value_fn)` |
 | `approx` | 任意 DAG（n > 28 或超出内存限制）；IS 采样 | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` 调度：n ≤ 8 → `exact`；有根树 → `exact_tree`；n ≤ 20 → `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；否则 → `approx`。
+`auto` 调度：n ≤ 8 → `exact`；有根树 → `exact_tree`；n ≤ 20 → 若 edge_count ≤ 2n 则 `exact_dag_sparse` 否则 `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；否则 → `approx`。
 
 `exact_dag_sparse` 只访问有效顺序理想（所有节点的父节点也存在的集合）。对于稀疏 DAG，这可能比 2^n 少几个数量级，返回 `n_order_ideals`、`state_ratio` 和 `memory_mb` 诊断信息。
 
@@ -252,7 +252,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## 状态
 
-实验性 — v0.8.2。在 v1.0 之前公共 API 可能会发生变化。
+实验性 — v0.8.3。在 v1.0 之前公共 API 可能会发生变化。
 
 ## 算法状态
 
