@@ -371,6 +371,75 @@ fn bench_approx_tree_15_10k_seeded(c: &mut Criterion) {
     });
 }
 
+fn bench_approx_chain_20_10k_seeded(c: &mut Criterion) {
+    let dag = make_chain(20);
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("approx_chain_20_10k_seeded", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+}
+
+fn bench_approx_balanced_tree_31_10k_seeded(c: &mut Criterion) {
+    let dag = make_balanced_tree(4); // n=31
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("approx_balanced_tree_31_10k_seeded", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(10_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+}
+
+fn bench_adaptive_batch_diamond_10(c: &mut Criterion) {
+    let dag = make_diamond_dag(8); // n=10
+    let explainer = AsvExplainer::new(dag);
+    c.bench_function("adaptive_batch_diamond_10", |b| {
+        b.iter(|| {
+            explainer
+                .approximate_adaptive_batched(
+                    |cs| Ok(cs.iter().map(|c| black_box(c.len() as f64)).collect()),
+                    AdaptiveSamplingConfig::new()
+                        .with_max_samples(10_000)
+                        .with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+}
+
+fn bench_exact_dag_vs_sparse_chain_16(c: &mut Criterion) {
+    // chain n=16: 15 edges; sparse DP visits only 17 order ideals vs 2^16 = 65536 dense states.
+    let dag = make_chain(16);
+    let explainer = AsvExplainer::new(dag);
+    let mut group = c.benchmark_group("exact_dag_vs_sparse_chain_16");
+    group.bench_function("exact_dag", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+    group.bench_function("exact_dag_sparse", |b| {
+        b.iter(|| {
+            explainer
+                .exact_dag_sparse(|s| Ok(black_box(s.len() as f64)))
+                .unwrap()
+        });
+    });
+    group.finish();
+}
+
 // ── approx vs approx_adaptive ────────────────────────────────────────────────
 
 fn bench_approx_vs_adaptive_chain_10(c: &mut Criterion) {
@@ -453,6 +522,10 @@ criterion_group!(
     bench_approx_parallel_chain_20,
     bench_approx_diamond_10_10k_seeded,
     bench_approx_tree_15_10k_seeded,
+    bench_approx_chain_20_10k_seeded,
+    bench_approx_balanced_tree_31_10k_seeded,
+    bench_adaptive_batch_diamond_10,
+    bench_exact_dag_vs_sparse_chain_16,
     bench_approx_vs_adaptive_chain_10,
     bench_approx_vs_uniform_diamond_10,
 );

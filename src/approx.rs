@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use rand::rngs::StdRng;
 use rayon::prelude::*;
@@ -9,7 +9,7 @@ use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::numerics::kahan_add;
 use crate::sampler::{
-    AdaptiveSamplingConfig, SampledOrdering, SamplerScratch, SamplingConfig, make_rng, sample_one,
+    AdaptiveSamplingConfig, SampledOrdering, SamplerScratch, SamplingConfig, make_rng,
     sample_one_into, sample_uniform_into, worker_seed,
 };
 
@@ -55,8 +55,15 @@ where
         let mut sum_w_sq = 0.0f64;
         let mut wsq_comp = 0.0f64;
         let mut cache = HashMap::<u64, f64>::new();
-        let samples: Vec<_> = (0..config.n_samples)
-            .map(|_| sample_one(dag, &mut rng))
+        let mut scratch = SamplerScratch::new(n);
+        let samples: Vec<SampledOrdering> = (0..config.n_samples)
+            .map(|_| {
+                let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
+                SampledOrdering {
+                    ordering: scratch.ordering.clone(),
+                    log_q,
+                }
+            })
             .collect();
         let max_log_w = samples
             .iter()
@@ -274,20 +281,18 @@ where
             .collect();
 
         // Collect unique coalition masks not yet in cache
-        let mut needed_set = HashSet::<u64>::new();
-        let mut uncached = Vec::<u64>::new();
+        let mut uncached: Vec<u64> = Vec::new();
         for s in &samples {
             let mut mask: u64 = 0;
-            if needed_set.insert(mask) && !cache.contains_key(&mask) {
-                uncached.push(mask);
-            }
+            uncached.push(mask);
             for &node in &s.ordering {
                 mask |= 1u64 << node.0;
-                if needed_set.insert(mask) && !cache.contains_key(&mask) {
-                    uncached.push(mask);
-                }
+                uncached.push(mask);
             }
         }
+        uncached.sort_unstable();
+        uncached.dedup();
+        uncached.retain(|m| !cache.contains_key(m));
 
         // One batch call for all uncached coalitions
         if !uncached.is_empty() {
@@ -597,20 +602,18 @@ where
             .collect();
 
         // Collect unique uncached coalition masks for this batch
-        let mut needed_set = HashSet::<u64>::new();
-        let mut uncached = Vec::<u64>::new();
+        let mut uncached: Vec<u64> = Vec::new();
         for s in &samples {
             let mut mask: u64 = 0;
-            if needed_set.insert(mask) && !cache.contains_key(&mask) {
-                uncached.push(mask);
-            }
+            uncached.push(mask);
             for &node in &s.ordering {
                 mask |= 1u64 << node.0;
-                if needed_set.insert(mask) && !cache.contains_key(&mask) {
-                    uncached.push(mask);
-                }
+                uncached.push(mask);
             }
         }
+        uncached.sort_unstable();
+        uncached.dedup();
+        uncached.retain(|m| !cache.contains_key(m));
 
         if !uncached.is_empty() {
             let coalitions: Vec<Vec<NodeId>> = uncached

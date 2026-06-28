@@ -2,6 +2,7 @@
 name = "causasv"
 version = "0.8.2"
 edition = "2024"
+rust-version = "1.85"
 description = "Causal feature attribution via Asymmetric Shapley Values (ASV) over DAGs — Rust + Python"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kent-tokyo/causasv"
