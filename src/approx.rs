@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use rand::rngs::StdRng;
 use rayon::prelude::*;
 
 use crate::asv::AsvResult;
@@ -7,7 +8,10 @@ use crate::cache::value_cached;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::numerics::kahan_add;
-use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig, make_rng, sample_one, worker_seed};
+use crate::sampler::{
+    AdaptiveSamplingConfig, SampledOrdering, SamplerScratch, SamplingConfig, make_rng, sample_one,
+    sample_one_into, worker_seed,
+};
 
 /// Self-normalized importance sampling estimator for ASV.
 ///
@@ -35,6 +39,8 @@ where
     }
     let seed = config.seed;
     let parallel = config.parallel || seed.is_none();
+
+    let base_in_deg = dag.in_degrees();
 
     let (numerator, denominator, sum_w_sq) = if !parallel {
         // Seeded single-threaded: collect all samples first, then apply per-batch
@@ -98,6 +104,7 @@ where
                 |(count, wseed)| -> Result<(Vec<f64>, f64, f64), CausasvError> {
                     let mut rng = make_rng(Some(wseed));
                     let mut cache = HashMap::<u64, f64>::new();
+                    let mut scratch = SamplerScratch::new(n);
                     let mut local_num = vec![0.0f64; n];
                     let mut num_c = vec![0.0f64; n];
                     let mut denom = 0.0f64;
@@ -105,12 +112,12 @@ where
                     let mut wsq = 0.0f64;
                     let mut wsq_c = 0.0f64;
                     for _ in 0..count {
-                        let sample = sample_one(dag, &mut rng);
-                        let w = (-sample.log_q).exp();
+                        let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
+                        let w = (-log_q).exp();
                         kahan_add(&mut denom, &mut denom_c, w);
                         kahan_add(&mut wsq, &mut wsq_c, w * w);
                         let mut prefix_mask: u64 = 0;
-                        for &node in &sample.ordering {
+                        for &node in &scratch.ordering {
                             let without = prefix_mask;
                             let with_node = prefix_mask | (1u64 << node.0);
                             let delta = value_cached(&mut cache, &value_fn, with_node)?
@@ -136,48 +143,55 @@ where
                 },
             )?
     } else {
-        // Unseeded parallel: Rayon with per-thread random RNG
-        (0..config.n_samples)
+        // Unseeded parallel: per-thread state (cache, rng, scratch) created once per thread via
+        // try_fold's identity; accumulation is direct into per-thread numerator so no per-sample
+        // allocation is needed.
+        type UState = (
+            HashMap<u64, f64>,
+            StdRng,
+            SamplerScratch,
+            Vec<f64>,
+            f64,
+            f64,
+        );
+        let mk_state = || -> UState {
+            (
+                HashMap::new(),
+                make_rng(None),
+                SamplerScratch::new(n),
+                vec![0.0f64; n],
+                0.0f64,
+                0.0f64,
+            )
+        };
+        let (_, _, _, acc_num, acc_denom, acc_wsq) = (0..config.n_samples)
             .into_par_iter()
-            .map_init(
-                || (HashMap::<u64, f64>::new(), make_rng(None)),
-                |(cache, rng), _| -> Result<(Vec<f64>, f64, f64), CausasvError> {
-                    let sample = sample_one(dag, rng);
-                    let w = (-sample.log_q).exp();
-                    let mut local_num = vec![0.0f64; n];
-                    let mut prefix_mask: u64 = 0;
-                    for &node in &sample.ordering {
-                        let without = prefix_mask;
-                        let with_node = prefix_mask | (1u64 << node.0);
-                        local_num[node.0 as usize] += w
-                            * (value_cached(cache, &value_fn, with_node)?
-                                - value_cached(cache, &value_fn, without)?);
-                        prefix_mask = with_node;
-                    }
-                    Ok((local_num, w, w * w))
-                },
-            )
-            .try_fold(
-                || (vec![0.0f64; n], 0.0f64, 0.0f64),
-                |mut acc, item| {
-                    let (local_num, w, wsq) = item?;
-                    for (a, b) in acc.0.iter_mut().zip(&local_num) {
-                        *a += b;
-                    }
-                    acc.1 += w;
-                    acc.2 += wsq;
-                    Ok(acc)
-                },
-            )
-            .try_reduce(
-                || (vec![0.0f64; n], 0.0f64, 0.0f64),
-                |mut a, b| {
-                    for (x, y) in a.0.iter_mut().zip(&b.0) {
-                        *x += y;
-                    }
-                    Ok((a.0, a.1 + b.1, a.2 + b.2))
-                },
-            )?
+            .try_fold(mk_state, |mut state, _| -> Result<UState, CausasvError> {
+                let (cache, rng, scratch, acc_num, acc_denom, acc_wsq) = &mut state;
+                let log_q = sample_one_into(dag, rng, scratch, &base_in_deg);
+                let w = (-log_q).exp();
+                *acc_denom += w;
+                *acc_wsq += w * w;
+                let mut prefix_mask: u64 = 0;
+                for &node in &scratch.ordering {
+                    let without = prefix_mask;
+                    let with_node = prefix_mask | (1u64 << node.0);
+                    acc_num[node.0 as usize] += w
+                        * (value_cached(cache, &value_fn, with_node)?
+                            - value_cached(cache, &value_fn, without)?);
+                    prefix_mask = with_node;
+                }
+                Ok(state)
+            })
+            .try_reduce(mk_state, |mut a, b| {
+                for (x, y) in a.3.iter_mut().zip(&b.3) {
+                    *x += y;
+                }
+                a.4 += b.4;
+                a.5 += b.5;
+                Ok(a)
+            })?;
+        (acc_num, acc_denom, acc_wsq)
     };
 
     let values = (0..n)
@@ -238,12 +252,22 @@ where
     let mut denominator = 0.0f64;
     let mut sum_w_sq = 0.0f64;
     let mut remaining = config.n_samples;
+    let base_in_deg = dag.in_degrees();
+    let mut scratch = SamplerScratch::new(n);
 
     while remaining > 0 {
         let batch = remaining.min(batch_size);
 
-        // Generate batch samples
-        let samples: Vec<_> = (0..batch).map(|_| sample_one(dag, &mut rng)).collect();
+        // Generate batch samples; scratch reused across iterations to eliminate per-sample alloc.
+        let samples: Vec<SampledOrdering> = (0..batch)
+            .map(|_| {
+                let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
+                SampledOrdering {
+                    ordering: scratch.ordering.clone(),
+                    log_q,
+                }
+            })
+            .collect();
 
         // Collect unique coalition masks not yet in cache
         let mut needed_set = HashSet::<u64>::new();
@@ -372,11 +396,21 @@ where
     let mut total_samples = 0usize;
     let mut prev_values = vec![f64::NAN; n];
     let mut converged = false;
+    let base_in_deg = dag.in_degrees();
+    let mut scratch = SamplerScratch::new(n);
 
     while total_samples < config.max_samples {
         let batch = config.batch_size.min(config.max_samples - total_samples);
 
-        let batch_samples: Vec<_> = (0..batch).map(|_| sample_one(dag, &mut rng)).collect();
+        let batch_samples: Vec<SampledOrdering> = (0..batch)
+            .map(|_| {
+                let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
+                SampledOrdering {
+                    ordering: scratch.ordering.clone(),
+                    log_q,
+                }
+            })
+            .collect();
         let max_log_w = batch_samples
             .iter()
             .map(|s| -s.log_q)
@@ -518,11 +552,21 @@ where
     let mut total_samples = 0usize;
     let mut prev_values = vec![f64::NAN; n];
     let mut converged = false;
+    let base_in_deg = dag.in_degrees();
+    let mut scratch = SamplerScratch::new(n);
 
     while total_samples < config.max_samples {
         let batch = config.batch_size.min(config.max_samples - total_samples);
 
-        let samples: Vec<_> = (0..batch).map(|_| sample_one(dag, &mut rng)).collect();
+        let samples: Vec<SampledOrdering> = (0..batch)
+            .map(|_| {
+                let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
+                SampledOrdering {
+                    ordering: scratch.ordering.clone(),
+                    log_q,
+                }
+            })
+            .collect();
 
         // Collect unique uncached coalition masks for this batch
         let mut needed_set = HashSet::<u64>::new();

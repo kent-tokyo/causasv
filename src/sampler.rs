@@ -125,27 +125,83 @@ pub(crate) struct SampledOrdering {
     pub log_q: f64,
 }
 
+/// Reusable scratch for sampling, allocated once per worker.
+/// Eliminates per-sample Vec allocation and reduces frontier management from O(n²) to O(n+edges).
+pub(crate) struct SamplerScratch {
+    pub in_deg: Vec<usize>,
+    pub frontier: Vec<usize>, // node indices (usize)
+    pub ordering: Vec<NodeId>,
+}
+
+impl SamplerScratch {
+    pub(crate) fn new(n: usize) -> Self {
+        Self {
+            in_deg: vec![0; n],
+            frontier: Vec::with_capacity(n),
+            ordering: Vec::with_capacity(n),
+        }
+    }
+}
+
+/// Sample one topological ordering, writing it into `scratch.ordering`.
+/// Returns log q(π). `base_in_deg` must be `dag.in_degrees()` computed once per DAG.
+///
+/// Frontier is maintained incrementally via swap_remove + child push: O(n + edges) per sample
+/// instead of the naive O(n²) full-scan-per-step approach.
+pub(crate) fn sample_one_into(
+    dag: &Dag,
+    rng: &mut StdRng,
+    scratch: &mut SamplerScratch,
+    base_in_deg: &[usize],
+) -> f64 {
+    let n = dag.node_count();
+    scratch.in_deg.copy_from_slice(base_in_deg);
+    scratch.frontier.clear();
+    for (i, &d) in scratch.in_deg.iter().enumerate() {
+        if d == 0 {
+            scratch.frontier.push(i);
+        }
+    }
+    scratch.ordering.clear();
+    let mut log_q = 0.0f64;
+    for _ in 0..n {
+        log_q -= (scratch.frontier.len() as f64).ln();
+        let idx = rng.random_range(0..scratch.frontier.len());
+        let node_idx = scratch.frontier.swap_remove(idx);
+        let node = NodeId(node_idx as u32);
+        scratch.ordering.push(node);
+        for &child in dag.children_raw(node) {
+            let c = child.0 as usize;
+            scratch.in_deg[c] -= 1;
+            if scratch.in_deg[c] == 0 {
+                scratch.frontier.push(c);
+            }
+        }
+    }
+    log_q
+}
+
 pub(crate) fn sample_one(dag: &Dag, rng: &mut StdRng) -> SampledOrdering {
     let n = dag.node_count();
     let mut in_deg = dag.in_degrees();
     let mut ordering = Vec::with_capacity(n);
-    let mut frontier = Vec::with_capacity(n);
+    // Build frontier once; update incrementally thereafter: O(n+edges) per sample vs O(n²).
+    let mut frontier: Vec<usize> = (0..n).filter(|&i| in_deg[i] == 0).collect();
     let mut log_q = 0.0f64;
-
     for _ in 0..n {
-        // Frontier: nodes with in_deg == 0 (placed nodes have in_deg = MAX)
-        frontier.clear();
-        frontier.extend((0..n).filter(|&i| in_deg[i] == 0));
         log_q -= (frontier.len() as f64).ln();
         let idx = rng.random_range(0..frontier.len());
-        let node = NodeId(frontier[idx] as u32);
+        let node_idx = frontier.swap_remove(idx);
+        let node = NodeId(node_idx as u32);
         ordering.push(node);
-        in_deg[node.0 as usize] = usize::MAX;
         for &child in dag.children_raw(node) {
-            in_deg[child.0 as usize] -= 1;
+            let c = child.0 as usize;
+            in_deg[c] -= 1;
+            if in_deg[c] == 0 {
+                frontier.push(c);
+            }
         }
     }
-
     SampledOrdering { ordering, log_q }
 }
 
