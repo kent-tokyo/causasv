@@ -3,6 +3,34 @@ use crate::cache::mask_to_coalition;
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 
+/// Compute dp_ind[mask] = # of linear extensions of the induced subgraph G[mask].
+/// Recurrence: dp_ind[mask] = Σ_{i: source of G[mask]} dp_ind[mask \ {i}].
+/// O(2^n × n). Shared by dag_exact_asv and sample_uniform_into.
+pub(crate) fn compute_dp_ind(n: usize, parents_mask: &[u64]) -> Result<Vec<u64>, CausasvError> {
+    let total_masks = 1usize << n;
+    let mut dp_ind = vec![0u64; total_masks];
+    dp_ind[0] = 1;
+    for mask in 1..total_masks {
+        let mask64 = mask as u64;
+        let mut bits = mask64;
+        while bits != 0 {
+            let bit = bits & bits.wrapping_neg();
+            let i = bit.trailing_zeros() as usize;
+            bits ^= bit;
+            if parents_mask[i] & mask64 == 0 {
+                // i has no parent in mask → source in G[mask]
+                let prev = dp_ind[mask ^ (1usize << i)];
+                dp_ind[mask] = dp_ind[mask].checked_add(prev).ok_or_else(|| {
+                    CausasvError::Overflow(format!(
+                        "dp_ind[{mask:#b}] overflowed u64 — use approx for this DAG"
+                    ))
+                })?;
+            }
+        }
+    }
+    Ok(dp_ind)
+}
+
 // ponytail: Vec<f64>[mask] beats HashMap here — n≤20 is enforced above, so 2^n ≤ 1M entries (8MB).
 // NaN sentinel means uncached; value_fn is assumed to return finite values (same assumption as HashMap path).
 fn value_cached_dense<F>(cache: &mut [f64], value_fn: &F, mask: u64) -> Result<f64, CausasvError>
@@ -81,28 +109,8 @@ where
     }
 
     // dp_ind[mask]: # of linear extensions of the induced subgraph G[mask], for ANY mask.
-    // Recurrence: i is a source in G[mask] iff parents_mask[i] & mask == 0.
     // Inner loop iterates only over nodes IN mask (bit iteration over mask itself).
-    let mut dp_ind = vec![0u64; total_masks];
-    dp_ind[0] = 1;
-    for mask in 1..total_masks {
-        let mask64 = mask as u64;
-        let mut bits = mask64;
-        while bits != 0 {
-            let bit = bits & bits.wrapping_neg();
-            let i = bit.trailing_zeros() as usize;
-            bits ^= bit;
-            if parents_mask[i] & mask64 == 0 {
-                // i has no parent in mask → source in G[mask]
-                let prev = dp_ind[mask ^ (1usize << i)];
-                dp_ind[mask] = dp_ind[mask].checked_add(prev).ok_or_else(|| {
-                    CausasvError::Overflow(format!(
-                        "dp_ind[{mask:#b}] overflowed u64 — use approx for this DAG"
-                    ))
-                })?;
-            }
-        }
-    }
+    let dp_ind = compute_dp_ind(n, parents_mask)?;
 
     let total = dp_ind[full_mask] as f64; // = L(G)
 

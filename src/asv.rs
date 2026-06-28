@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::approx::{
     approximate_asv, approximate_asv_adaptive, approximate_asv_adaptive_batched,
-    approximate_asv_batched,
+    approximate_asv_batched, approximate_asv_uniform,
 };
 use crate::cache::value_cached;
-use crate::dag_dp::dag_exact_asv;
+use crate::dag_dp::{compute_dp_ind, dag_exact_asv};
 use crate::dag_dp_sparse::{ExactDagConfig, dag_exact_asv_sparse};
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
@@ -139,6 +139,43 @@ impl AsvExplainer {
     {
         self.dag.validate()?;
         approximate_asv(&self.dag, value_fn, config)
+    }
+
+    /// Approximate ASV via uniform topological order sampling.
+    ///
+    /// Unlike [`approximate`](Self::approximate) which uses IS-weighted frontier sampling,
+    /// this method samples each linear extension with probability exactly 1/L(G) by
+    /// consulting the `dp_ind` table at every step. Every sample contributes equally —
+    /// there is no importance-weight variance, so ESS = n_samples exactly.
+    ///
+    /// A 2^n `dp_ind` table is precomputed in O(2^n × n) before sampling begins.
+    /// For n_samples much smaller than 2^n this pays off handsomely; for n_samples ≈ 2^n
+    /// use [`exact_dag`](Self::exact_dag) instead.
+    ///
+    /// **Limit**: n ≤ 20 (same as `exact_dag`). For larger DAGs use `approximate()`.
+    pub fn approximate_uniform<F>(
+        &self,
+        value_fn: F,
+        config: SamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        let n = self.dag.node_count();
+        if n > 20 {
+            return Err(CausasvError::InvalidConfig(format!(
+                "approximate_uniform requires n ≤ 20 (2^n dp_ind table), got {n}; \
+                 use approximate() for larger DAGs"
+            )));
+        }
+        if config.n_samples == 0 {
+            return Err(CausasvError::InvalidConfig(
+                "n_samples must be > 0".to_string(),
+            ));
+        }
+        self.dag.validate()?;
+        let dp_ind = compute_dp_ind(n, &self.parents_mask)?;
+        approximate_asv_uniform(value_fn, config, &dp_ind, &self.parents_mask)
     }
 
     /// Exact ASV for rooted directed trees. Returns Err(NotRootedTree) if the graph is not one.

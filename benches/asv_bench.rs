@@ -404,6 +404,36 @@ fn bench_approx_vs_adaptive_chain_10(c: &mut Criterion) {
     group.finish();
 }
 
+// ── approximate_uniform vs approximate (frontier IS) ─────────────────────────
+
+fn bench_approx_vs_uniform_diamond_10(c: &mut Criterion) {
+    // Diamond n=10: frontier IS has low ESS due to branching; uniform sampling has ESS=n_samples.
+    let dag = make_diamond_dag(8); // n=10
+    let explainer = AsvExplainer::new(dag);
+    let mut group = c.benchmark_group("approx_vs_uniform_diamond_10_1k");
+    group.bench_function("frontier_IS_1k", |b| {
+        b.iter(|| {
+            explainer
+                .approximate(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(1_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+    group.bench_function("uniform_1k", |b| {
+        b.iter(|| {
+            explainer
+                .approximate_uniform(
+                    |s| Ok(black_box(s.len() as f64)),
+                    SamplingConfig::new(1_000).with_seed(42),
+                )
+                .unwrap()
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_exact_chain_7,
@@ -424,5 +454,6 @@ criterion_group!(
     bench_approx_diamond_10_10k_seeded,
     bench_approx_tree_15_10k_seeded,
     bench_approx_vs_adaptive_chain_10,
+    bench_approx_vs_uniform_diamond_10,
 );
 criterion_main!(benches);

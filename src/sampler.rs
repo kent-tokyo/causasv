@@ -205,6 +205,52 @@ pub(crate) fn sample_one(dag: &Dag, rng: &mut StdRng) -> SampledOrdering {
     SampledOrdering { ordering, log_q }
 }
 
+/// Sample one topological ordering uniformly at random using the precomputed dp_ind table.
+///
+/// At each step, the next node i is chosen with probability proportional to
+/// dp_ind[remaining \ {i}], where remaining = V \ placed. This produces each linear
+/// extension with probability 1/L(G), so no IS correction is needed (ESS = n_samples).
+///
+/// `dp_ind` must be the table returned by `compute_dp_ind(n, parents_mask)`.
+/// Writes the result into `ordering` (cleared on entry).
+pub(crate) fn sample_uniform_into(
+    rng: &mut StdRng,
+    dp_ind: &[u64],
+    parents_mask: &[u64],
+    ordering: &mut Vec<NodeId>,
+) {
+    let n = parents_mask.len();
+    ordering.clear();
+    let full = (1u64 << n) - 1;
+    let mut placed: u64 = 0;
+
+    for _ in 0..n {
+        let remaining = full ^ placed;
+        let total = dp_ind[remaining as usize];
+        let r: u64 = if total > 1 {
+            rng.random_range(0..total)
+        } else {
+            0
+        };
+        let mut cum: u64 = 0;
+        let mut bits = remaining;
+        while bits != 0 {
+            let bit = bits & bits.wrapping_neg();
+            let i = bit.trailing_zeros() as usize;
+            bits ^= bit;
+            if parents_mask[i] & placed == parents_mask[i] {
+                // i is a source in G[remaining]: all its parents have been placed
+                cum += dp_ind[(remaining ^ bit) as usize];
+                if r < cum {
+                    ordering.push(NodeId(i as u32));
+                    placed |= bit;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn make_rng(seed: Option<u64>) -> StdRng {
     match seed {
         Some(s) => StdRng::seed_from_u64(s),
