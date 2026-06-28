@@ -254,6 +254,10 @@ where
     let mut remaining = config.n_samples;
     let base_in_deg = dag.in_degrees();
     let mut scratch = SamplerScratch::new(n);
+    // Running maximum of log-weights across ALL batches.
+    // When the max rises, accumulated sums are rescaled so all samples share the same
+    // effective normalization constant — necessary for a valid cross-batch IS estimator.
+    let mut global_max_log_w = f64::NEG_INFINITY;
 
     while remaining > 0 {
         let batch = remaining.min(batch_size);
@@ -302,17 +306,22 @@ where
             }
         }
 
-        // Process IS contributions using cache.
-        // Log-weight normalization within the batch: subtract the maximum log-weight
-        // before exp() to prevent potential overflow for extreme frontier distributions.
-        // Self-normalized IS is invariant to a common multiplicative scale on weights,
-        // so subtracting max(log_w) from all log_w_i does not change ASV values.
-        let max_log_w = samples
+        // Update global max and rescale accumulated sums if a new maximum is found.
+        let batch_max = samples
             .iter()
             .map(|s| -s.log_q)
             .fold(f64::NEG_INFINITY, f64::max);
+        if batch_max > global_max_log_w {
+            let scale = (global_max_log_w - batch_max).exp(); // ∈ (0,1]; = 0 on first batch
+            for x in numerator.iter_mut() {
+                *x *= scale;
+            }
+            denominator *= scale;
+            sum_w_sq *= scale * scale;
+            global_max_log_w = batch_max;
+        }
         for s in &samples {
-            let w = ((-s.log_q) - max_log_w).exp(); // batch-normalized IS weight
+            let w = ((-s.log_q) - global_max_log_w).exp();
             denominator += w;
             sum_w_sq += w * w;
             let mut prefix_mask: u64 = 0;
@@ -398,6 +407,7 @@ where
     let mut converged = false;
     let base_in_deg = dag.in_degrees();
     let mut scratch = SamplerScratch::new(n);
+    let mut global_max_log_w = f64::NEG_INFINITY;
 
     while total_samples < config.max_samples {
         let batch = config.batch_size.min(config.max_samples - total_samples);
@@ -411,12 +421,29 @@ where
                 }
             })
             .collect();
-        let max_log_w = batch_samples
+
+        // Rescale accumulated Kahan sums when a new log-weight maximum is found.
+        let batch_max = batch_samples
             .iter()
             .map(|s| -s.log_q)
             .fold(f64::NEG_INFINITY, f64::max);
+        if batch_max > global_max_log_w {
+            let scale = (global_max_log_w - batch_max).exp();
+            let scale_sq = scale * scale;
+            for i in 0..n {
+                numerator[i] *= scale;
+                num_comp[i] *= scale;
+                num_sq[i] *= scale_sq;
+                num_sq_comp[i] *= scale_sq;
+            }
+            denominator *= scale;
+            denom_comp *= scale;
+            sum_w_sq *= scale_sq;
+            wsq_comp *= scale_sq;
+            global_max_log_w = batch_max;
+        }
         for sample in &batch_samples {
-            let w = ((-sample.log_q) - max_log_w).exp();
+            let w = ((-sample.log_q) - global_max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
@@ -554,6 +581,7 @@ where
     let mut converged = false;
     let base_in_deg = dag.in_degrees();
     let mut scratch = SamplerScratch::new(n);
+    let mut global_max_log_w = f64::NEG_INFINITY;
 
     while total_samples < config.max_samples {
         let batch = config.batch_size.min(config.max_samples - total_samples);
@@ -600,12 +628,27 @@ where
             }
         }
 
-        let max_log_w = samples
+        let batch_max = samples
             .iter()
             .map(|s| -s.log_q)
             .fold(f64::NEG_INFINITY, f64::max);
+        if batch_max > global_max_log_w {
+            let scale = (global_max_log_w - batch_max).exp();
+            let scale_sq = scale * scale;
+            for i in 0..n {
+                numerator[i] *= scale;
+                num_comp[i] *= scale;
+                num_sq[i] *= scale_sq;
+                num_sq_comp[i] *= scale_sq;
+            }
+            denominator *= scale;
+            denom_comp *= scale;
+            sum_w_sq *= scale_sq;
+            wsq_comp *= scale_sq;
+            global_max_log_w = batch_max;
+        }
         for s in &samples {
-            let w = ((-s.log_q) - max_log_w).exp();
+            let w = ((-s.log_q) - global_max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
