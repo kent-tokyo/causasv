@@ -10,7 +10,7 @@ use crate::graph::{Dag, NodeId};
 use crate::numerics::kahan_add;
 use crate::sampler::{
     AdaptiveSamplingConfig, SampledOrdering, SamplerScratch, SamplingConfig, make_rng, sample_one,
-    sample_one_into, worker_seed,
+    sample_one_into, sample_uniform_into, worker_seed,
 };
 
 /// Self-normalized importance sampling estimator for ASV.
@@ -729,6 +729,68 @@ where
         effective_sample_size: Some(ess),
         converged: Some(converged),
         stderr: Some(stderr),
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
+        method_used: None,
+    })
+}
+
+/// Approximate ASV via uniform topological order sampling.
+///
+/// Each linear extension is sampled with probability 1/L(G) by selecting the next node
+/// proportionally to dp_ind[remaining \ {i}]. No IS correction — every sample has equal
+/// weight, so ESS = n_samples exactly and there is no importance-weight variance.
+///
+/// Requires dp_ind precomputed by `compute_dp_ind` (O(2^n × n)). Practical for n ≤ 20.
+pub(crate) fn approximate_asv_uniform<F>(
+    value_fn: F,
+    config: SamplingConfig,
+    dp_ind: &[u64],
+    parents_mask: &[u64],
+) -> Result<AsvResult, CausasvError>
+where
+    F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+{
+    let n = parents_mask.len();
+    let mut rng = make_rng(config.seed);
+    let mut cache = HashMap::<u64, f64>::new();
+    let mut numerator = vec![0.0f64; n];
+    let mut num_comp = vec![0.0f64; n];
+    let mut ordering = Vec::with_capacity(n);
+
+    for _ in 0..config.n_samples {
+        sample_uniform_into(&mut rng, dp_ind, parents_mask, &mut ordering);
+        let mut prefix_mask: u64 = 0;
+        for &node in &ordering {
+            let without = prefix_mask;
+            let with_node = prefix_mask | (1u64 << node.0);
+            let delta = value_cached(&mut cache, &value_fn, with_node)?
+                - value_cached(&mut cache, &value_fn, without)?;
+            kahan_add(
+                &mut numerator[node.0 as usize],
+                &mut num_comp[node.0 as usize],
+                delta,
+            );
+            prefix_mask = with_node;
+        }
+    }
+
+    let n_f = config.n_samples as f64;
+    let values = (0..n)
+        .map(|i| (NodeId(i as u32), numerator[i] / n_f))
+        .collect();
+
+    Ok(AsvResult {
+        values,
+        n_samples: config.n_samples,
+        seed: config.seed,
+        is_exact: false,
+        effective_sample_size: Some(n_f), // uniform sampling: ESS = n_samples exactly
+        converged: None,
+        stderr: None,
         n_order_ideals: None,
         state_ratio: None,
         memory_mb: None,
