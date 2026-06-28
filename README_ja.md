@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
+[![PyPI](https://img.shields.io/pypi/v/causasv.svg)](https://pypi.org/project/causasv/)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 <br>
@@ -30,6 +31,19 @@
 ## なぜ因果 DAG が重要なのか
 
 特徴量に因果関係がある場合、SHAP はある変数にその子孫を介して媒介された効果の帰属を割り当てることがあります。ASV は有効とみなす順序付けを制限することでこれを防ぎます。
+
+## インストール
+
+```bash
+pip install causasv
+```
+
+Linux (x86_64 manylinux)・macOS (universal2)・Windows (x86_64) 向け wheel を [PyPI](https://pypi.org/project/causasv/) で公開しています。Rust の場合は `Cargo.toml` に追加してください：
+
+```toml
+[dependencies]
+causasv = "0.8"
+```
 
 ## Rust の使用例
 
@@ -238,7 +252,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## ステータス
 
-実験的 — v0.8.0。v1.0 以前に公開 API が変更される可能性があります。
+実験的 — v0.8.2。v1.0 以前に公開 API が変更される可能性があります。
 
 ## アルゴリズムの状況
 
@@ -289,12 +303,13 @@ Apple M シリーズ（arm64、リリースビルド）での選択結果。`v(S
 | チェーン | 7 | `exact`（ブルートフォース） | 2.7 µs |
 | バランス木 | 15 | `exact_tree`（DP） | 2.8 ms |
 | キャタピラー | 10 | `exact_tree`（DP） | 170 µs |
-| チェーン | 16 | `exact_dag`（密 DP） | 5.3 ms |
+| チェーン | 10 | `exact_dag`（密 DP） | **23 µs** |
+| チェーン | 16 | `exact_dag`（密 DP） | **2.4 ms** |
 | チェーン | 24 | `exact_dag_sparse` | 15 µs |
-| 2本の並列チェーン | 20 | `exact_dag`（密、100万状態） | **87.9 ms** |
-| 2本の並列チェーン | 20 | `exact_dag_sparse`（121状態） | **91 µs**（約1000倍速） |
-| チェーン | 10 | `approx`（1k サンプル） | 916 µs |
-| チェーン | 20 | `approx` シード付き直列（10k） | 18.2 ms |
+| 2本の並列チェーン | 20 | `exact_dag`（密、100万状態） | **55 ms** |
+| 2本の並列チェーン | 20 | `exact_dag_sparse`（121状態） | **91 µs**（約600倍速） |
+| ダイヤモンド | 10 | `approx` シード付き（10k サンプル） | **16 ms** |
+| チェーン | 20 | `approx` シード付き直列（10k） | **19 ms** |
 | チェーン | 20 | `approx` 並列 4 スレッド（10k） | 7.4 ms |
 
 `cargo bench` で再現できます。

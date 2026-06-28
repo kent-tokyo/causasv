@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
+[![PyPI](https://img.shields.io/pypi/v/causasv.svg)](https://pypi.org/project/causasv/)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 <br>
@@ -30,6 +31,19 @@ Standard SHAP averages over all n! feature permutations, ignoring causal structu
 ## Why causal DAGs matter
 
 When features have causal relationships, SHAP can assign attribution to a variable for effects that are actually mediated by its descendants. ASV prevents this by constraining which orderings are considered valid.
+
+## Installation
+
+```bash
+pip install causasv
+```
+
+Wheels for Linux (x86_64 manylinux), macOS (universal2), and Windows (x86_64) are published on [PyPI](https://pypi.org/project/causasv/). For Rust, add to `Cargo.toml`:
+
+```toml
+[dependencies]
+causasv = "0.8"
+```
 
 ## Rust example
 
@@ -331,12 +345,13 @@ Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [do
 | Chain | 7 | `exact` (brute-force) | 2.7 µs |
 | Balanced tree | 15 | `exact_tree` (DP) | 2.8 ms |
 | Caterpillar | 10 | `exact_tree` (DP) | 170 µs |
-| Chain | 16 | `exact_dag` (dense DP) | 5.3 ms |
+| Chain | 10 | `exact_dag` (dense DP) | **23 µs** |
+| Chain | 16 | `exact_dag` (dense DP) | **2.4 ms** |
 | Chain | 24 | `exact_dag_sparse` | 15 µs |
-| Two parallel chains | 20 | `exact_dag` (dense, 1M states) | **87.9 ms** |
-| Two parallel chains | 20 | `exact_dag_sparse` (121 states) | **91 µs** (~1000×) |
-| Chain | 10 | `approx` (1k samples) | 916 µs |
-| Chain | 20 | `approx` serial seeded (10k) | 18.2 ms |
+| Two parallel chains | 20 | `exact_dag` (dense, 1M states) | **55 ms** |
+| Two parallel chains | 20 | `exact_dag_sparse` (121 states) | **91 µs** (~600×) |
+| Diamond | 10 | `approx` seeded (10k samples) | **16 ms** |
+| Chain | 20 | `approx` serial seeded (10k) | **19 ms** |
 | Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
 
 Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
