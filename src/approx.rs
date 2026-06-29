@@ -878,3 +878,137 @@ where
         method_used: None,
     })
 }
+
+/// Adaptive uniform topological ordering sampler for sparse DAGs.
+///
+/// Like `approximate_asv_adaptive` but uses uniform (not IS-weighted) sampling via lazy
+/// dp_ind memoization, so every sample has weight 1 — ESS = n_samples exactly. Convergence
+/// is based only on relative change in per-node estimates (no ESS gate needed).
+///
+/// Returns per-node stderr = std(delta_i) / sqrt(n_samples).
+pub(crate) fn approximate_asv_uniform_sparse_adaptive<F>(
+    _dag: &Dag,
+    value_fn: F,
+    config: AdaptiveSamplingConfig,
+    parents_mask: &[u64],
+    memory_limit_bytes: usize,
+) -> Result<AsvResult, CausasvError>
+where
+    F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+{
+    if config.batch_size == 0 {
+        return Err(CausasvError::InvalidConfig(
+            "batch_size must be > 0".to_string(),
+        ));
+    }
+    if config.min_samples > config.max_samples {
+        return Err(CausasvError::InvalidConfig(
+            "min_samples must be ≤ max_samples".to_string(),
+        ));
+    }
+    let n = parents_mask.len();
+    let mut rng = make_rng(config.seed);
+    let mut dp_ind_cache: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut value_cache = HashMap::<u64, f64>::new();
+
+    let mut numerator = vec![0.0f64; n]; // Σ delta_i
+    let mut num_comp = vec![0.0f64; n];
+    let mut num_sq = vec![0.0f64; n]; // Σ delta_i² (for stderr)
+    let mut num_sq_comp = vec![0.0f64; n];
+    let mut total_samples = 0usize;
+    let mut prev_values = vec![f64::NAN; n];
+    let mut converged = false;
+    let mut ordering = Vec::with_capacity(n);
+
+    while total_samples < config.max_samples {
+        let batch = config.batch_size.min(config.max_samples - total_samples);
+        for _ in 0..batch {
+            sample_uniform_sparse_into(
+                &mut rng,
+                parents_mask,
+                n,
+                &mut dp_ind_cache,
+                &mut ordering,
+            )?;
+            if dp_ind_cache.len() * 80 > memory_limit_bytes {
+                return Err(CausasvError::Overflow(format!(
+                    "approximate_uniform_sparse_adaptive: dp_ind cache exceeded {}MB; \
+                     use approximate_adaptive() for this DAG",
+                    memory_limit_bytes / (1024 * 1024),
+                )));
+            }
+            let mut prefix_mask: u64 = 0;
+            for &node in &ordering {
+                let without = prefix_mask;
+                let with_node = prefix_mask | (1u64 << node.0);
+                let delta = value_cached(&mut value_cache, &value_fn, with_node)?
+                    - value_cached(&mut value_cache, &value_fn, without)?;
+                kahan_add(
+                    &mut numerator[node.0 as usize],
+                    &mut num_comp[node.0 as usize],
+                    delta,
+                );
+                kahan_add(
+                    &mut num_sq[node.0 as usize],
+                    &mut num_sq_comp[node.0 as usize],
+                    delta * delta,
+                );
+                prefix_mask = with_node;
+            }
+        }
+        total_samples += batch;
+
+        if total_samples < config.min_samples {
+            continue;
+        }
+        // No ESS gate: uniform sampling → ESS = total_samples always.
+        let max_rel_change = (0..n)
+            .map(|i| {
+                let cur = numerator[i] / total_samples as f64;
+                let prev = prev_values[i];
+                if prev.is_nan() {
+                    f64::INFINITY
+                } else {
+                    (cur - prev).abs() / (prev.abs() + 1e-10)
+                }
+            })
+            .fold(0.0f64, f64::max);
+        for i in 0..n {
+            prev_values[i] = numerator[i] / total_samples as f64;
+        }
+        if max_rel_change < config.rel_tol {
+            converged = true;
+            break;
+        }
+    }
+
+    let n_f = total_samples as f64;
+    // stderr_i = sqrt( (Σδ²/n - (Σδ/n)²) / n )
+    let stderr: BTreeMap<NodeId, f64> = (0..n)
+        .map(|i| {
+            let mean_sq = num_sq[i] / n_f;
+            let mean = numerator[i] / n_f;
+            let var = (mean_sq - mean * mean).max(0.0);
+            (NodeId(i as u32), (var / n_f).sqrt())
+        })
+        .collect();
+    let values = (0..n)
+        .map(|i| (NodeId(i as u32), numerator[i] / n_f))
+        .collect();
+
+    Ok(AsvResult {
+        values,
+        n_samples: total_samples,
+        seed: config.seed,
+        is_exact: false,
+        effective_sample_size: Some(n_f), // ESS = n_samples exactly (uniform weights)
+        converged: Some(converged),
+        stderr: Some(stderr),
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
+        method_used: None,
+    })
+}

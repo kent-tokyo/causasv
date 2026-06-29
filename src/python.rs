@@ -402,10 +402,11 @@ impl PyASVExplainer {
             "exact_tree" => self.inner.exact_tree(rust_fn),
             "exact_dag" => self.inner.exact_dag(rust_fn),
             "exact_dag_sparse" => self.inner.exact_dag_sparse(rust_fn),
+            "uniform_sparse" => self.inner.approximate_uniform_sparse(rust_fn, make_cfg()),
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "unknown method '{method}': use 'auto', 'approx', 'exact', 'exact_tree', \
-                     'exact_dag', or 'exact_dag_sparse'"
+                     'exact_dag', 'exact_dag_sparse', or 'uniform_sparse'"
                 )));
             }
         }
@@ -580,7 +581,8 @@ impl PyASVExplainer {
     /// normal approximation: value ± Φ⁻¹((1+ci)/2) × stderr.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (value_fn, min_samples=1_000, max_samples=100_000,
-                        batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None, ci=None))]
+                        batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None, ci=None,
+                        method="approx"))]
     fn explain_adaptive<'py>(
         &self,
         py: Python<'py>,
@@ -592,6 +594,7 @@ impl PyASVExplainer {
         ess_ratio_min: f64,
         seed: Option<u64>,
         ci: Option<f64>,
+        method: &str,
     ) -> PyResult<Bound<'py, PyDict>> {
         if let Some(ci_level) = ci
             && !(0.0 < ci_level && ci_level < 1.0)
@@ -621,10 +624,16 @@ impl PyASVExplainer {
             ess_ratio_min,
             seed,
         };
-        let result = self
-            .inner
-            .approximate_adaptive(rust_fn, config)
-            .map_err(py_err)?;
+        let result = match method {
+            "approx" => self.inner.approximate_adaptive(rust_fn, config),
+            "uniform_sparse" => self.inner.approximate_uniform_sparse_adaptive(rust_fn, config),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown method '{method}' for explain_adaptive: use 'approx' or 'uniform_sparse'"
+                )));
+            }
+        }
+        .map_err(py_err)?;
         let ess_ratio = result
             .effective_sample_size
             .map(|e| e / result.n_samples as f64);
@@ -638,6 +647,11 @@ impl PyASVExplainer {
                     .collect()
             })
             .unwrap_or_default();
+        let method_label = if method == "uniform_sparse" {
+            "uniform_sparse_adaptive"
+        } else {
+            "approx_adaptive"
+        };
         let d = PyDict::new(py);
         d.set_item("values", &values_map)?;
         d.set_item("ess", result.effective_sample_size)?;
@@ -645,7 +659,7 @@ impl PyASVExplainer {
         d.set_item("n_samples", result.n_samples)?;
         d.set_item("seed", result.seed)?;
         d.set_item("is_exact", result.is_exact)?;
-        d.set_item("method", "approx_adaptive")?;
+        d.set_item("method", method_label)?;
         d.set_item("converged", result.converged)?;
         d.set_item("stderr", &stderr_map)?;
         if let Some(ci_level) = ci {
