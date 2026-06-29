@@ -296,6 +296,12 @@ The IS approximate estimator uses self-normalized importance sampling to correct
 
 See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretation, and the full checklist.
 
+**Choosing between `auto` and `auto_quality`:**
+- Use `auto` for exploratory work where CI is not required — it dispatches to exact methods when feasible and IS-weighted approximation otherwise.
+- Use `auto_quality` (or `explain_quality()` in Python) when you need confidence intervals or a guaranteed ESS = n_samples on approximate paths. Every code path returns `stderr`; the approximate fallback is uniform sparse adaptive (not IS-weighted), so ESS is always equal to n_samples.
+
+See [docs/benchmark_corpus.md](docs/benchmark_corpus.md) for measured runtime and method selection across 8 canonical DAGs.
+
 ## Status
 
 Experimental — v0.8.5. Public API may change before v1.0.
