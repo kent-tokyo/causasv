@@ -1012,3 +1012,175 @@ where
         method_used: None,
     })
 }
+
+/// Batched uniform sparse adaptive ASV.
+///
+/// Like `approximate_asv_uniform_sparse_adaptive` but collects an entire batch of
+/// topological orderings, deduplicates the coalition masks they need, and calls
+/// `value_fn_batch` once per convergence-check batch instead of once per coalition.
+/// Reduces Python GIL round-trips from O(n × batch_size) to O(unique_masks_per_batch).
+///
+/// ESS = n_samples exactly (uniform weights, no IS variance).
+pub(crate) fn approximate_asv_uniform_sparse_adaptive_batched<F>(
+    _dag: &Dag,
+    value_fn_batch: F,
+    config: AdaptiveSamplingConfig,
+    parents_mask: &[u64],
+    memory_limit_bytes: usize,
+) -> Result<AsvResult, CausasvError>
+where
+    F: Fn(&[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError>,
+{
+    if config.batch_size == 0 {
+        return Err(CausasvError::InvalidConfig(
+            "batch_size must be > 0".to_string(),
+        ));
+    }
+    if config.min_samples > config.max_samples {
+        return Err(CausasvError::InvalidConfig(
+            "min_samples must be ≤ max_samples".to_string(),
+        ));
+    }
+    let n = parents_mask.len();
+    let mut rng = make_rng(config.seed);
+    let mut dp_ind_cache: HashMap<u64, u64> = HashMap::new();
+    let mut value_cache = HashMap::<u64, f64>::new();
+
+    let mut numerator = vec![0.0f64; n];
+    let mut num_comp = vec![0.0f64; n];
+    let mut num_sq = vec![0.0f64; n];
+    let mut num_sq_comp = vec![0.0f64; n];
+    let mut total_samples = 0usize;
+    let mut prev_values = vec![f64::NAN; n];
+    let mut converged = false;
+    let mut ordering_buf = Vec::with_capacity(n);
+
+    while total_samples < config.max_samples {
+        let batch = config.batch_size.min(config.max_samples - total_samples);
+
+        // Sample `batch` topological orderings.
+        let mut orderings: Vec<Vec<NodeId>> = Vec::with_capacity(batch);
+        for _ in 0..batch {
+            sample_uniform_sparse_into(
+                &mut rng,
+                parents_mask,
+                n,
+                &mut dp_ind_cache,
+                &mut ordering_buf,
+            )?;
+            if dp_ind_cache.len() * 80 > memory_limit_bytes {
+                return Err(CausasvError::Overflow(format!(
+                    "uniform_sparse_adaptive_batch: dp_ind cache exceeded {}MB; \
+                     use approximate_adaptive_batched() for this DAG",
+                    memory_limit_bytes / (1024 * 1024),
+                )));
+            }
+            orderings.push(ordering_buf.clone());
+        }
+
+        // Collect all unique prefix masks, dedup, filter already-cached.
+        let mut uncached: Vec<u64> = Vec::new();
+        for order in &orderings {
+            let mut mask: u64 = 0;
+            uncached.push(mask); // empty coalition
+            for &node in order {
+                mask |= 1u64 << node.0;
+                uncached.push(mask);
+            }
+        }
+        uncached.sort_unstable();
+        uncached.dedup();
+        uncached.retain(|m| !value_cache.contains_key(m));
+
+        // One batch call for all uncached coalitions.
+        if !uncached.is_empty() {
+            let coalitions: Vec<Vec<NodeId>> = uncached
+                .iter()
+                .map(|&mask| {
+                    (0..n)
+                        .filter(|&i| mask & (1u64 << i) != 0)
+                        .map(|i| NodeId(i as u32))
+                        .collect()
+                })
+                .collect();
+            let values = value_fn_batch(&coalitions)?;
+            for (&mask, val) in uncached.iter().zip(values.iter()) {
+                value_cache.insert(mask, *val);
+            }
+        }
+
+        // Compute marginals from the fully populated cache.
+        for order in &orderings {
+            let mut prefix_mask: u64 = 0;
+            for &node in order {
+                let without = *value_cache.get(&prefix_mask).unwrap();
+                let with_node_mask = prefix_mask | (1u64 << node.0);
+                let with = *value_cache.get(&with_node_mask).unwrap();
+                let delta = with - without;
+                kahan_add(
+                    &mut numerator[node.0 as usize],
+                    &mut num_comp[node.0 as usize],
+                    delta,
+                );
+                kahan_add(
+                    &mut num_sq[node.0 as usize],
+                    &mut num_sq_comp[node.0 as usize],
+                    delta * delta,
+                );
+                prefix_mask = with_node_mask;
+            }
+        }
+        total_samples += batch;
+
+        if total_samples < config.min_samples {
+            continue;
+        }
+        let max_rel_change = (0..n)
+            .map(|i| {
+                let cur = numerator[i] / total_samples as f64;
+                let prev = prev_values[i];
+                if prev.is_nan() {
+                    f64::INFINITY
+                } else {
+                    (cur - prev).abs() / (prev.abs() + 1e-10)
+                }
+            })
+            .fold(0.0f64, f64::max);
+        for i in 0..n {
+            prev_values[i] = numerator[i] / total_samples as f64;
+        }
+        if max_rel_change < config.rel_tol {
+            converged = true;
+            break;
+        }
+    }
+
+    let n_f = total_samples as f64;
+    let stderr: BTreeMap<NodeId, f64> = (0..n)
+        .map(|i| {
+            let mean_sq = num_sq[i] / n_f;
+            let mean = numerator[i] / n_f;
+            let var = (mean_sq - mean * mean).max(0.0);
+            (NodeId(i as u32), (var / n_f).sqrt())
+        })
+        .collect();
+    let values = (0..n)
+        .map(|i| (NodeId(i as u32), numerator[i] / n_f))
+        .collect();
+
+    Ok(AsvResult {
+        values,
+        n_samples: total_samples,
+        seed: config.seed,
+        is_exact: false,
+        effective_sample_size: Some(n_f), // ESS = n_samples exactly (uniform weights)
+        converged: Some(converged),
+        stderr: Some(stderr),
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
+        method_used: None,
+    })
+}

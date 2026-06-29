@@ -777,6 +777,114 @@ impl PyASVExplainer {
     ///
     /// Each sampling batch of `batch_size` samples becomes one Python function call,
     /// reducing GIL acquisition overhead for large models.
+    /// Quality-first batched ASV: like `explain_quality` but accepts a batch value function.
+    ///
+    /// Routes `n ≤ 63` to uniform sparse adaptive batch sampling (ESS = n_samples, no IS
+    /// variance). Falls back to IS-adaptive batch for `n > 63`. Returns the same dict keys
+    /// as `explain_quality`: values, stderr, ess, ess_ratio, n_samples, seed, is_exact,
+    /// selected_method, converged, fallback_from, fallback_reason, and optionally ci/ci_low/ci_high.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn_batch, min_samples=1_000, max_samples=100_000,
+                        batch_size=1_000, rel_tol=0.01, seed=None, ci=None))]
+    fn explain_quality_batch<'py>(
+        &self,
+        py: Python<'py>,
+        value_fn_batch: Py<PyAny>,
+        min_samples: usize,
+        max_samples: usize,
+        batch_size: usize,
+        rel_tol: f64,
+        seed: Option<u64>,
+        ci: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if let Some(ci_level) = ci
+            && !(0.0 < ci_level && ci_level < 1.0)
+        {
+            return Err(PyValueError::new_err(
+                "ci must be in (0, 1), e.g. ci=0.95 for a 95% interval",
+            ));
+        }
+        let names = &self.names;
+        let rust_batch_fn = move |coalitions: &[Vec<NodeId>]| -> Result<Vec<f64>, CausasvError> {
+            Python::attach(|py| {
+                let py_coalitions: Vec<Vec<&str>> = coalitions
+                    .iter()
+                    .map(|coal| {
+                        coal.iter()
+                            .map(|id| names[id.0 as usize].as_str())
+                            .collect()
+                    })
+                    .collect();
+                value_fn_batch
+                    .call1(py, (py_coalitions,))
+                    .and_then(|r| r.extract::<Vec<f64>>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
+        };
+        let config = AdaptiveSamplingConfig {
+            min_samples,
+            max_samples,
+            batch_size,
+            rel_tol,
+            ess_ratio_min: 0.0, // uniform: ESS = n_samples always
+            seed,
+        };
+        let n = self.names.len();
+        let (result, selected_method) = if n <= 63 {
+            let r = self
+                .inner
+                .approximate_uniform_sparse_adaptive_batched(rust_batch_fn, config)
+                .map_err(py_err)?;
+            (r, "uniform_sparse_adaptive_batch")
+        } else {
+            let r = self
+                .inner
+                .approximate_adaptive_batched(rust_batch_fn, config)
+                .map_err(py_err)?;
+            (r, "approx_adaptive_batch")
+        };
+        let ess_ratio = result
+            .effective_sample_size
+            .map(|e| e / result.n_samples as f64);
+        let values_map = self.values_map(&result);
+        let stderr_map: HashMap<String, f64> = result
+            .stderr
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .map(|(id, &v)| (self.names[id.0 as usize].clone(), v))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let d = PyDict::new(py);
+        d.set_item("values", &values_map)?;
+        d.set_item("ess", result.effective_sample_size)?;
+        d.set_item("ess_ratio", ess_ratio)?;
+        d.set_item("n_samples", result.n_samples)?;
+        d.set_item("seed", result.seed)?;
+        d.set_item("is_exact", result.is_exact)?;
+        d.set_item("selected_method", selected_method)?;
+        d.set_item("converged", result.converged)?;
+        d.set_item("stderr", &stderr_map)?;
+        d.set_item("fallback_from", result.fallback_from.as_deref())?;
+        d.set_item("fallback_reason", result.fallback_reason.as_deref())?;
+        if let Some(ci_level) = ci {
+            let z = normal_quantile((1.0 + ci_level) / 2.0);
+            let ci_low: HashMap<String, f64> = values_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v - z * stderr_map.get(k).copied().unwrap_or(0.0)))
+                .collect();
+            let ci_high: HashMap<String, f64> = values_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v + z * stderr_map.get(k).copied().unwrap_or(0.0)))
+                .collect();
+            d.set_item("ci", ci_level)?;
+            d.set_item("ci_low", ci_low)?;
+            d.set_item("ci_high", ci_high)?;
+        }
+        Ok(d)
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (value_fn_batch, min_samples=1_000, max_samples=100_000,
                         batch_size=1_000, rel_tol=0.01, ess_ratio_min=0.10, seed=None))]

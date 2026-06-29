@@ -58,27 +58,17 @@ def explain_quality(
         raise ValueError("One of value_fn or value_fn_batch must be provided.")
 
     if value_fn_batch is not None:
-        # Batched path: use IS adaptive (value_fn_batch not supported by uniform_sparse).
-        result = explainer.explain_adaptive_batch(
-            value_fn_batch,
+        # Batched path: uniform sparse adaptive (ESS = n_samples, no IS variance).
+        kwargs = dict(
             min_samples=min_samples,
             max_samples=max_samples,
             batch_size=batch_size,
             rel_tol=rel_tol,
             seed=seed,
         )
-        result.setdefault("selected_method", result.get("method", "approx_adaptive"))
-        result.setdefault("fallback_from", None)
-        result.setdefault("fallback_reason", None)
         if ci is not None:
-            stderr = result.get("stderr", {})
-            values = result.get("values", {})
-            # Approximate normal quantile via logit approximation (no scipy needed).
-            z = _normal_quantile((1.0 + ci) / 2.0)
-            result["ci"] = ci
-            result["ci_low"] = {k: v - z * stderr.get(k, 0.0) for k, v in values.items()}
-            result["ci_high"] = {k: v + z * stderr.get(k, 0.0) for k, v in values.items()}
-        return result
+            kwargs["ci"] = ci
+        return explainer.explain_quality_batch(value_fn_batch, **kwargs)
 
     # Single value_fn path: use auto_quality (exact-first, uniform sparse adaptive fallback).
     kwargs = dict(
