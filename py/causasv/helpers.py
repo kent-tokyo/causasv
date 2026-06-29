@@ -73,9 +73,8 @@ def explain_quality(
         if ci is not None:
             stderr = result.get("stderr", {})
             values = result.get("values", {})
-            import math
             # Approximate normal quantile via logit approximation (no scipy needed).
-            z = _normal_quantile(ci)
+            z = _normal_quantile((1.0 + ci) / 2.0)
             result["ci"] = ci
             result["ci_low"] = {k: v - z * stderr.get(k, 0.0) for k, v in values.items()}
             result["ci_high"] = {k: v + z * stderr.get(k, 0.0) for k, v in values.items()}

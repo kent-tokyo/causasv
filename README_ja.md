@@ -92,30 +92,30 @@ fn main() -> Result<(), causasv::CausasvError> {
 
 ## Python の使用例
 
+ほとんどのユーザーには `explain_quality()` が推奨入口です。実行可能なら厳密計算、そうでなければ信頼区間付きの近似にフォールバックします：
+
 ```python
-from causasv import CausalDAG, ASVExplainer
+from causasv import CausalDAG, ASVExplainer, explain_quality
 
-# エッジリストから DAG を構築
 dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-
-# networkx DiGraph からも構築可能
-# import networkx as nx; G = nx.DiGraph(); G.add_edge(...)
-# dag = CausalDAG.from_networkx(G)
-
 explainer = ASVExplainer(dag)
 
-values = explainer.explain(
+info = explain_quality(
+    explainer,
     value_fn=lambda feature_names: my_model_score(feature_names),
-    method="auto",   # n≤8 なら exact、有根木なら exact_tree、それ以外は approx
-    n_samples=10_000,
+    ci=0.95,   # 95% 信頼区間を含める
     seed=42,
 )
-# values: dict[str, float]  特徴量名 → ASV 値
+print(info["values"])           # dict[str, float] — 特徴量ごとの ASV 値
+print(info["ci_low"])           # dict[str, float] — 95% CI 下限
+print(info["ci_high"])          # dict[str, float] — 95% CI 上限
+print(info["selected_method"])  # 例: "exact_dag_sparse" or "uniform_sparse_adaptive"
+print(info["stderr"])           # dict[str, float] — 特徴量ごとの標準誤差
 ```
 
 Python の `value_fn` は連合内の特徴量名のソート済みリストを受け取り、float を返す必要があります。
 
-`explain_with_diagnostics()` を使うと ESS・シード・メソッド名も取得できます：
+**低レベル API** — メソッドを明示指定する場合は `explain_with_diagnostics()` を使用：
 
 ```python
 info = explainer.explain_with_diagnostics(
