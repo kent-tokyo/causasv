@@ -49,3 +49,7 @@ jobs:
           .venv/bin/pip install maturin pytest
           cd py && ../.venv/bin/maturin develop --features python
           ../.venv/bin/python -m pytest tests/
+      - name: Smoke test Python public API
+        run: |
+          cd py
+          ../.venv/bin/python tests/smoke_test.py

@@ -92,30 +92,30 @@ fn main() -> Result<(), causasv::CausasvError> {
 
 ## Python 示例
 
+大多数用户推荐使用 `explain_quality()` 作为入口 — 可行时进行精确计算，否则回退到带置信区间的近似计算：
+
 ```python
-from causasv import CausalDAG, ASVExplainer
+from causasv import CausalDAG, ASVExplainer, explain_quality
 
-# 从边列表构建 DAG
 dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-
-# 或从 networkx DiGraph 构建
-# import networkx as nx; G = nx.DiGraph(); G.add_edge(...)
-# dag = CausalDAG.from_networkx(G)
-
 explainer = ASVExplainer(dag)
 
-values = explainer.explain(
+info = explain_quality(
+    explainer,
     value_fn=lambda feature_names: my_model_score(feature_names),
-    method="auto",   # n≤8 用 exact，有根树用 exact_tree，否则用 approx
-    n_samples=10_000,
+    ci=0.95,   # 包含 95% 置信区间
     seed=42,
 )
-# values: dict[str, float]，特征名 → ASV 值
+print(info["values"])           # dict[str, float] — 每个特征的 ASV 值
+print(info["ci_low"])           # dict[str, float] — 95% CI 下界
+print(info["ci_high"])          # dict[str, float] — 95% CI 上界
+print(info["selected_method"])  # 例如 "exact_dag_sparse" 或 "uniform_sparse_adaptive"
+print(info["stderr"])           # dict[str, float] — 每个特征的标准误差
 ```
 
 Python 的 `value_fn` 接收联合中存在的特征名排序列表，必须返回一个浮点数。
 
-使用 `explain_with_diagnostics()` 获取 ESS、种子和方法名：
+**低级 API** — 显式指定方法时使用 `explain_with_diagnostics()`：
 
 ```python
 info = explainer.explain_with_diagnostics(

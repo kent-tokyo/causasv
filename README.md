@@ -93,30 +93,30 @@ fn main() -> Result<(), causasv::CausasvError> {
 
 ## Python example
 
+For most users, `explain_quality()` is the recommended entry point — it selects exact computation when feasible and falls back to uncertainty-aware approximate sampling with confidence intervals:
+
 ```python
-from causasv import CausalDAG, ASVExplainer
+from causasv import CausalDAG, ASVExplainer, explain_quality
 
-# From a list of edges
 dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-
-# Or from a networkx DiGraph
-# import networkx as nx; G = nx.DiGraph(); G.add_edge(...)
-# dag = CausalDAG.from_networkx(G)
-
 explainer = ASVExplainer(dag)
 
-values = explainer.explain(
+info = explain_quality(
+    explainer,
     value_fn=lambda feature_names: my_model_score(feature_names),
-    method="auto",   # exact for n≤8, exact_tree for rooted trees, approx otherwise
-    n_samples=10_000,
+    ci=0.95,   # include 95% confidence intervals
     seed=42,
 )
-# values: dict[str, float] mapping feature name → ASV value
+print(info["values"])           # dict[str, float] — ASV per feature
+print(info["ci_low"])           # dict[str, float] — 95% CI lower bounds
+print(info["ci_high"])          # dict[str, float] — 95% CI upper bounds
+print(info["selected_method"])  # e.g. "exact_dag_sparse" or "uniform_sparse_adaptive"
+print(info["stderr"])           # dict[str, float] — per-feature standard error
 ```
 
 The Python `value_fn` receives a sorted list of feature names present in the coalition and must return a float.
 
-Use `explain_with_diagnostics()` to get ESS, seed, and method alongside values:
+**Lower-level API** — for explicit method control, use `explain_with_diagnostics()`:
 
 ```python
 info = explainer.explain_with_diagnostics(
