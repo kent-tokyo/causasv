@@ -11,6 +11,10 @@ classifiers = ["Programming Language :: Python :: 3"]
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[tool.pytest.ini_options]
+markers = ["slow: mark test as slow-running (excluded from default CI run)"]
+addopts = "-m 'not slow'"
+
 [tool.maturin]
 features = ["python"]
 manifest-path = "../Cargo.toml"

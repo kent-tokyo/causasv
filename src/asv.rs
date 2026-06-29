@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::approx::{
     approximate_asv, approximate_asv_adaptive, approximate_asv_adaptive_batched,
     approximate_asv_batched, approximate_asv_uniform, approximate_asv_uniform_sparse,
-    approximate_asv_uniform_sparse_adaptive,
+    approximate_asv_uniform_sparse_adaptive, approximate_asv_uniform_sparse_adaptive_batched,
 };
 use crate::cache::value_cached;
 use crate::dag_dp::{compute_dp_ind, dag_exact_asv};
@@ -539,5 +539,37 @@ impl AsvExplainer {
     {
         self.dag.validate()?;
         approximate_asv_adaptive_batched(&self.dag, value_fn_batch, config)
+    }
+
+    /// Batched uniform sparse adaptive ASV.
+    ///
+    /// Like `approximate_uniform_sparse_adaptive` but evaluates all unique coalition
+    /// masks from an entire batch of sampled orderings with a single `value_fn_batch`
+    /// call, reducing Python GIL round-trips from O(n × batch_size) to
+    /// O(unique_masks_per_batch). ESS = n_samples exactly (no IS variance).
+    ///
+    /// Requires n ≤ 63. For larger DAGs, use `approximate_adaptive_batched`.
+    pub fn approximate_uniform_sparse_adaptive_batched<F>(
+        &self,
+        value_fn_batch: F,
+        config: AdaptiveSamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError>,
+    {
+        let n = self.dag.node_count();
+        if n > 63 {
+            return Err(CausasvError::InvalidConfig(format!(
+                "approximate_uniform_sparse_adaptive_batched requires n ≤ 63, got {n}"
+            )));
+        }
+        self.dag.validate()?;
+        approximate_asv_uniform_sparse_adaptive_batched(
+            &self.dag,
+            value_fn_batch,
+            config,
+            &self.parents_mask,
+            2 * 1024 * 1024 * 1024,
+        )
     }
 }
