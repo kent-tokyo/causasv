@@ -5,6 +5,31 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- `AsvExplainer::approximate_uniform_sparse_adaptive_batched()`: batched quality path — collects an entire convergence batch of topological orderings, deduplicates the prefix coalition masks they need, and calls `value_fn_batch` once per batch. Reduces Python GIL round-trips from O(n × batch_size) to O(unique_masks_per_batch). ESS = n_samples exactly (no IS variance). Requires n ≤ 63; falls back to IS-adaptive batch for n > 63.
+- `ASVExplainer.explain_quality_batch()` Python method: same dict contract as `explain_quality` (values, stderr, ci, ci_low, ci_high, selected_method, fallback_from, fallback_reason); routes n ≤ 63 to uniform sparse batch, n > 63 to IS-adaptive batch.
+
+### Changed
+- `causasv.explain_quality(value_fn_batch=…)` now routes through `explain_quality_batch()` instead of `explain_adaptive_batch()`. The batch path now returns ESS = n_samples and uniform sparse CI bounds for n ≤ 63, instead of IS-weighted estimates.
+
+### Tests
+- `tests/golden_tests.rs`: algebraic identity tests — `v(S) = Σwᵢ → ASV_i = wᵢ` verified at < 1e-10 tolerance across all three exact code paths (exact, exact_dag, exact_dag_sparse) on chain / fork / collider topologies.
+- `tests/approx_batch_tests.rs`: batch accuracy vs exact_dag (diamond, weighted v), ESS = n_samples invariant, convergence flag, additive identity.
+- `tests/uniform_sampler_tests.rs`: non-additive `v(S) = |S|²` test for `approximate_uniform_sparse_adaptive` (verifies correctness beyond additive identity).
+- `py/tests/test_ci_coverage.py`: empirical 95% CI coverage check on 25-node dense DAG (forces uniform_sparse_adaptive path); split into quick (10 seeds, CI) and `@pytest.mark.slow` (30 seeds, skipped by default).
+- `py/tests/test_diagnostics.py`: key-presence contract test — both exact and approximate paths must return all required dict keys.
+
+### CI
+- `.github/workflows/ci.yml`: add `python -m py_compile` syntax sweep over all `.py` files before maturin build; add `examples/benchmark_corpus.py` run step alongside `quality_workflow.py`.
+- `py/pyproject.toml`: register `slow` pytest marker; `addopts = "-m 'not slow'"` excludes slow tests from default CI run.
+
+### Docs
+- `docs/comparison_shap.md`: add caveat noting the runtime comparison reflects DAG-known sparse conditions (chain DAG, exact sparse DP) where causasv's advantage is largest.
+
+---
+
 ## [0.8.5] — 2026-06
 
 ### Added

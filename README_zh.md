@@ -109,7 +109,7 @@ info = explain_quality(
 print(info["values"])           # dict[str, float] — 每个特征的 ASV 值
 print(info["ci_low"])           # dict[str, float] — 95% CI 下界
 print(info["ci_high"])          # dict[str, float] — 95% CI 上界
-print(info["selected_method"])  # 例如 "exact_dag_sparse" 或 "uniform_sparse_adaptive"
+print(info["selected_method"])  # 例如 "exact_dag_sparse"、"uniform_sparse_adaptive" 或 "uniform_sparse_adaptive_batch"
 print(info["stderr"])           # dict[str, float] — 每个特征的标准误差
 ```
 
@@ -151,17 +151,22 @@ print(info["converged"])  # bool — 是否在 max_samples 前达到 rel_tol
 print(info["ess_ratio"])  # float — ESS / n_samples
 ```
 
-批量联合评估（减少大型模型的 Python GIL 开销），使用 `value_fn_batch`：
+对于大型模型（逐联合调用代价高昂），将 `value_fn_batch` 传入 `explain_quality()`。当 n ≤ 63 时使用均匀稀疏自适应批量采样（ESS = n_samples，无 IS 方差，始终返回 CI）：
 
 ```python
 # value_fn_batch 接收 list[list[str]]，返回 list[float]
-info = explainer.explain_with_diagnostics(
+info = explain_quality(
+    explainer,
     value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
-    method="approx",
-    n_samples=50_000,
-    batch_size=512,
+    ci=0.95,
     seed=42,
 )
+print(info["values"])           # dict[str, float]
+print(info["ci_low"])           # dict[str, float]
+print(info["selected_method"])  # "uniform_sparse_adaptive_batch"（n>63 为 "approx_adaptive_batch"）
+```
+
+批量路径将 Python GIL 往返从 O(n × batch_size) 降至 O(unique_masks_per_batch)。如需显式使用 IS 自适应批量评估，请直接调用 `explainer.explain_adaptive_batch()`。
 ```
 
 确定性并行近似，同时传入 `seed` 和 `parallel=True`：
