@@ -25,6 +25,8 @@ causasv uses `auto_quality` (exact when feasible); SHAP uses `KernelExplainer(ns
 
 causasv returns exact results in all rows; SHAP returns approximate values.
 
+> **Note:** this comparison uses a chain DAG where causasv applies exact sparse DP (visiting only n+1 order ideals) while SHAP's KernelExplainer samples the full 2ⁿ coalition space. causasv's advantage is largest in DAG-known, sparse settings; SHAP is the right tool when no causal structure is available.
+
 ---
 
 ## Coalition call count — chain DAG
