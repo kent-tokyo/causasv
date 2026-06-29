@@ -70,6 +70,7 @@ pub(crate) fn worker_seed(global: u64, k: usize) -> u64 {
 /// less than `rel_tol` relative to their current values *and* the ESS ratio
 /// exceeds `ess_ratio_min`. Falls back to `max_samples` if convergence is never
 /// reached.
+#[derive(Clone, Copy)]
 pub struct AdaptiveSamplingConfig {
     /// Minimum samples before convergence is checked. Default: 1 000.
     pub min_samples: usize,

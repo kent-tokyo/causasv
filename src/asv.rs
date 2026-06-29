@@ -455,32 +455,56 @@ impl AsvExplainer {
                 Ok(r)
             }
         } else if n <= 63 {
+            // Borrow value_fn so the closure can be used in multiple fallback arms.
+            let vfn = &value_fn;
             // Cheap preflight: count order ideals up to 250k before committing to full BFS.
             if estimate_sparse_feasible(&self.dag, &self.parents_mask, 250_000) {
                 let sparse_cfg = ExactDagConfig {
                     max_nodes: n.min(63),
                     ..ExactDagConfig::default()
                 };
-                match self.exact_dag_sparse_with_config(|c| value_fn(c), &sparse_cfg) {
+                let fallback_msg = match self.exact_dag_sparse_with_config(|c| vfn(c), &sparse_cfg)
+                {
                     Ok(mut r) => {
                         r.method_used = Some("exact_dag_sparse");
+                        return Ok(r);
+                    }
+                    Err(CausasvError::InvalidConfig(msg)) | Err(CausasvError::Overflow(msg)) => msg,
+                    Err(e) => return Err(e),
+                };
+                // exact_dag_sparse failed — try uniform sparse adaptive, then IS adaptive.
+                match self.approximate_uniform_sparse_adaptive(|c| vfn(c), config) {
+                    Ok(mut r) => {
+                        r.fallback_from = Some("exact_dag_sparse".to_string());
+                        r.fallback_reason = Some(fallback_msg);
+                        r.method_used = Some("uniform_sparse_adaptive");
                         Ok(r)
                     }
-                    Err(CausasvError::InvalidConfig(ref msg))
-                    | Err(CausasvError::Overflow(ref msg)) => {
-                        let mut r = self.approximate_uniform_sparse_adaptive(value_fn, config)?;
+                    Err(CausasvError::Overflow(msg)) => {
+                        let mut r = self.approximate_adaptive(|c| vfn(c), config)?;
                         r.fallback_from = Some("exact_dag_sparse".to_string());
-                        r.fallback_reason = Some(msg.clone());
-                        r.method_used = Some("uniform_sparse_adaptive");
+                        r.fallback_reason = Some(msg);
+                        r.method_used = Some("approx_adaptive");
                         Ok(r)
                     }
                     Err(e) => Err(e),
                 }
             } else {
-                // Preflight exceeded 250k budget — skip exact, go to uniform sparse adaptive.
-                let mut r = self.approximate_uniform_sparse_adaptive(value_fn, config)?;
-                r.method_used = Some("uniform_sparse_adaptive");
-                Ok(r)
+                // Preflight exceeded 250k budget — try uniform sparse adaptive, then IS adaptive.
+                match self.approximate_uniform_sparse_adaptive(|c| vfn(c), config) {
+                    Ok(mut r) => {
+                        r.method_used = Some("uniform_sparse_adaptive");
+                        Ok(r)
+                    }
+                    Err(CausasvError::Overflow(msg)) => {
+                        let mut r = self.approximate_adaptive(|c| vfn(c), config)?;
+                        r.fallback_from = Some("uniform_sparse_adaptive".to_string());
+                        r.fallback_reason = Some(msg);
+                        r.method_used = Some("approx_adaptive");
+                        Ok(r)
+                    }
+                    Err(e) => Err(e),
+                }
             }
         } else {
             // n > 63: uniform_sparse_adaptive requires n ≤ 63; use IS adaptive.
