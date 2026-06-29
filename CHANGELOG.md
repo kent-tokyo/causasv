@@ -5,6 +5,27 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.5] — 2026-06
+
+### Added
+- `AsvExplainer::auto_quality()`: quality-first dispatch — exact when feasible, then `approximate_uniform_sparse_adaptive` (ESS = n_samples, zero IS variance, stderr + CI always returned); IS adaptive only for n > 63
+- `ASVExplainer.explain_quality()` Python method: returns `values`, `stderr`, `ci_low`, `ci_high`, `selected_method`, `converged`, `fallback_reason` in one call
+- `causasv.explain_quality()` top-level Python helper: routes `value_fn` to `explain_quality()`, `value_fn_batch` to `explain_adaptive_batch()`; CI computed without scipy
+- `causasv.plot` module: `plot.bar(values)` and `plot.waterfall(values, base_value=...)` with matplotlib as optional dependency
+
+### Fixed
+- `helpers.py`: CI quantile bug — `_normal_quantile(ci)` → `_normal_quantile((1.0 + ci) / 2.0)` in the batched path; ci=0.95 now correctly gives z≈1.96 instead of z≈1.64
+- `auto_quality()` n≤63 branch: add `estimate_sparse_feasible(250k)` preflight before `exact_dag_sparse_with_config()`; dense DAGs no longer run a 2GiB BFS before falling back
+
+### Docs
+- README × 3: "When to use causasv" guidance section (Use / Do not use)
+- README × 3: top Python example replaced with `explain_quality(…, ci=0.95)` pattern; `explainer.explain()` demoted to "Lower-level API"
+
+### CI
+- `.github/workflows/ci.yml`: Python job now runs `py/tests/smoke_test.py` — exercises `explain_quality`, CI bound ordering, and `plot` import; catches public-API regressions before merge
+
+---
+
 ## [0.8.4] — 2026-06
 
 ### Added
