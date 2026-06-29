@@ -263,19 +263,20 @@ values = ASVExplainer(dag).explain(value_fn, method="auto")
 | `exact` | Small DAGs (n ≤ ~8); enumerates all linear extensions | `explainer.exact(value_fn)` |
 | `exact_tree` | Rooted directed trees; order-ideal DP | `explainer.exact_tree(value_fn)` |
 | `exact_dag` | General DAGs, n ≤ 20; dense order-ideal DP | `explainer.exact_dag(value_fn)` |
-| `exact_dag_sparse` | Sparse DAGs, n ≤ 28; BFS over valid order ideals only | `explainer.exact_dag_sparse(value_fn)` |
-| `approx` | Any DAG (n > 28 or memory limit exceeded); IS sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
+| `exact_dag_sparse` | Sparse DAGs, n ≤ 63; BFS over valid order ideals only | `explainer.exact_dag_sparse(value_fn)` |
+| `uniform_sparse` | Sparse DAGs, n ≤ 63; zero-variance uniform sampling (ESS = n_samples) | `explainer.approximate_uniform_sparse(value_fn, cfg)` |
+| `approx` | Any DAG; IS-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag_sparse` if edge_count ≤ 2n else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; else → `approx`.
+`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag_sparse` if edge_count ≤ 2n else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; 28 < n ≤ 63 → `exact_dag_sparse` if order ideals ≤ 250k (sparse preflight), else `approx`; n > 63 → `approx`.
 
 `exact_dag_sparse` visits only valid order ideals (sets where every node's parents are also present). For sparse DAGs (chains, trees, few branching points), this can be orders of magnitude fewer states than 2^n. Returns `n_order_ideals`, `state_ratio`, and `memory_mb` diagnostics.
 
-The approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results.
+`approximate_uniform_sparse` samples each linear extension with equal probability 1/L(G) using a lazily memoized `dp_ind` table (HashMap), so ESS = n_samples exactly — no IS weight variance. Use `explain_adaptive(method="uniform_sparse")` for adaptive stopping with per-feature stderr and CI.
 
-The result includes `effective_sample_size` (ESS = (Σw)² / Σw²): ESS ≈ n_samples means IS weights are uniform and the estimate is reliable; ESS ≪ n_samples indicates high weight variance.
+The IS approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results. ESS = (Σw)² / Σw²: ESS ≈ n_samples means reliable; ESS ≪ n_samples means high variance.
 
 **Approximation diagnostics checklist** — before trusting an approximate result:
-1. `info["ess_ratio"]` ≥ 0.1
+1. `info["ess_ratio"]` ≥ 0.1 (or 1.0 if using `uniform_sparse`)
 2. Run `explain_stability()` with multiple seeds; `rank_stability` ≥ 0.9
 3. Use `explain_adaptive()` if you need per-feature stderr and CI bounds
 
@@ -283,7 +284,7 @@ See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretat
 
 ## Status
 
-Experimental — v0.8.3. Public API may change before v1.0.
+Experimental — v0.8.4. Public API may change before v1.0.
 
 ## Algorithm status
 
@@ -292,7 +293,8 @@ Experimental — v0.8.3. Public API may change before v1.0.
 | `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
 | `exact_tree` | Rooted tree validation + order-ideal DP | Efficient for trees; hook-length formula |
 | `exact_dag` | Order-ideal DP over 2^n states | General DAGs, n ≤ 20; O(2^n × n) |
-| `exact_dag_sparse` | BFS over valid order ideals + lazy dp_ind | Sparse DAGs, n ≤ 28; memory-bounded |
+| `exact_dag_sparse` | BFS over valid order ideals + lazy dp_ind | Sparse DAGs, n ≤ 63; memory-bounded |
+| `uniform_sparse` | Lazy dp_ind HashMap uniform sampler | Sparse DAGs n ≤ 63; ESS = n_samples exactly |
 | `approx` | Self-normalized IS over topological orderings | Any DAG; corrects frontier-sampler bias |
 
 The brute-force `exact` implementation is used as the reference oracle in tests for all other methods.
@@ -308,7 +310,9 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | Exact ASV (brute-force) | ✓ | ✓ | Stable |
 | Rooted-tree exact DP | ✓ | ✓ | Experimental |
 | General DAG exact DP (n ≤ 20) | ✓ | ✓ | Experimental |
-| Sparse exact DAG DP (n ≤ 28) | ✓ | ✓ | Experimental |
+| Sparse exact DAG DP (n ≤ 63) | ✓ | ✓ | Experimental |
+| Uniform sparse sampling (ESS = n_samples) | ✓ | ✓ | Experimental |
+| Adaptive uniform sparse + CI | ✓ | ✓ | Experimental |
 | Approximate ASV with ESS | ✓ | ✓ | Experimental |
 | Adaptive approximation + CI | ✓ | ✓ | Experimental |
 | Seeded deterministic parallel approx | ✓ | ✓ | Experimental |

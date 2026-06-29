@@ -1,6 +1,6 @@
 [package]
 name = "causasv"
-version = "0.8.2"
+version = "0.8.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Causal feature attribution via Asymmetric Shapley Values (ASV) over DAGs — Rust + Python"

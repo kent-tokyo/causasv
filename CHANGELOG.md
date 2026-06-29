@@ -5,6 +5,28 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.4] — 2026-06
+
+### Added
+- `approximate_uniform_sparse()`: uniform topological ordering sampler for sparse DAGs with n > 20; uses lazily memoized `dp_ind` (HashMap) instead of the 2^n precomputed slice — ESS = n_samples exactly (no IS weight variance), memory-bounded at 2 GiB
+- `approximate_uniform_sparse_adaptive()`: adaptive variant with automatic convergence stopping (rel_tol), per-node stderr, and CI support; uniform weights mean no ESS gate — simpler convergence than IS adaptive
+- Python `method="uniform_sparse"` in `explain()` and `explain_with_diagnostics()` 
+- Python `explain_adaptive(method="uniform_sparse")` for adaptive uniform sparse with CI
+
+### Performance
+- `approx.rs`: seeded single-threaded `approximate_asv` path converted to one-pass streaming with incremental `global_max_log_w` rescaling (same as batched paths); eliminates `samples: Vec<SampledOrdering>` and all `ordering.clone()` calls — last per-sample allocation removed
+- `auto()` dispatch extended to 28 < n ≤ 63: new `estimate_sparse_feasible()` BFS preflight (no dp_ind, no value_fn) counts order ideals up to 250k budget; sparse chains/trees with n > 28 now get exact results instead of falling to approx
+
+### Internals
+- `dag_dp_sparse.rs`: add `estimate_sparse_feasible(dag, parents_mask, budget) -> bool` — fast preflight BFS used by auto() for the n > 28 branch
+- `dag_dp_sparse.rs`: add `dp_ind_lazy_pub()` wrapper to expose `dp_ind_lazy` to `sampler.rs` for sparse uniform sampling
+- `sampler.rs`: add `sample_uniform_sparse_into()` — uniform topological sampler using lazy dp_ind HashMap
+
+### Tests
+- `tests/uniform_sampler_tests.rs`: 5 new tests — ESS == n_samples (chain/diamond/fork/two-parallel-chains), exact agreement with `exact()` on small DAGs (≤ 5% error), adaptive convergence check, memory limit behavior
+
+---
+
 ## [0.8.3] — 2026-06
 
 ### Performance
