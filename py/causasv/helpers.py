@@ -3,6 +3,109 @@
 from causasv import ASVExplainer
 
 
+def explain_quality(
+    explainer,
+    value_fn=None,
+    *,
+    value_fn_batch=None,
+    seed=None,
+    ci=0.95,
+    max_samples=100_000,
+    min_samples=1_000,
+    batch_size=1_000,
+    rel_tol=0.01,
+):
+    """One-stop ASV computation with uncertainty estimates.
+
+    Tries exact methods first, falls back to uniform sparse adaptive sampling
+    (ESS = n_samples; no IS weight variance). Always returns stderr and ci bounds.
+
+    Args:
+        explainer: ASVExplainer instance.
+        value_fn: ``(list[str]) -> float``. Mutually exclusive with value_fn_batch.
+        value_fn_batch: ``(list[list[str]]) -> list[float]``. Preferred for large models.
+        seed: RNG seed for reproducibility.
+        ci: Confidence level for CI bounds, e.g. 0.95 for 95% CI. Set None to skip.
+        max_samples: Maximum number of samples for approximate paths.
+        min_samples: Minimum samples before convergence is checked.
+        batch_size: Samples per convergence-check batch.
+        rel_tol: Relative change threshold for convergence.
+
+    Returns:
+        dict with keys: values, stderr, ess, ess_ratio, is_exact, selected_method,
+        converged, n_samples, seed, fallback_from, fallback_reason,
+        and optionally ci, ci_low, ci_high.
+
+    Example::
+
+        from causasv import CausalDAG, ASVExplainer
+        from causasv.helpers import explain_quality
+
+        dag = CausalDAG.from_edges([("A", "B"), ("B", "C")])
+        result = explain_quality(
+            ASVExplainer(dag),
+            value_fn=lambda features: model.score(features),
+            ci=0.95,
+        )
+        print(result["values"])     # dict[str, float]
+        print(result["ci_low"])     # dict[str, float]
+        print(result["ci_high"])    # dict[str, float]
+        print(result["selected_method"])  # e.g. "exact_dag_sparse"
+    """
+    if value_fn is not None and value_fn_batch is not None:
+        raise ValueError("Pass either value_fn or value_fn_batch, not both.")
+    if value_fn is None and value_fn_batch is None:
+        raise ValueError("One of value_fn or value_fn_batch must be provided.")
+
+    if value_fn_batch is not None:
+        # Batched path: use IS adaptive (value_fn_batch not supported by uniform_sparse).
+        result = explainer.explain_adaptive_batch(
+            value_fn_batch,
+            min_samples=min_samples,
+            max_samples=max_samples,
+            batch_size=batch_size,
+            rel_tol=rel_tol,
+            seed=seed,
+        )
+        result.setdefault("selected_method", result.get("method", "approx_adaptive"))
+        result.setdefault("fallback_from", None)
+        result.setdefault("fallback_reason", None)
+        if ci is not None:
+            stderr = result.get("stderr", {})
+            values = result.get("values", {})
+            import math
+            # Approximate normal quantile via logit approximation (no scipy needed).
+            z = _normal_quantile(ci)
+            result["ci"] = ci
+            result["ci_low"] = {k: v - z * stderr.get(k, 0.0) for k, v in values.items()}
+            result["ci_high"] = {k: v + z * stderr.get(k, 0.0) for k, v in values.items()}
+        return result
+
+    # Single value_fn path: use auto_quality (exact-first, uniform sparse adaptive fallback).
+    kwargs = dict(
+        min_samples=min_samples,
+        max_samples=max_samples,
+        batch_size=batch_size,
+        rel_tol=rel_tol,
+        seed=seed,
+    )
+    if ci is not None:
+        kwargs["ci"] = ci
+    return explainer.explain_quality(value_fn, **kwargs)
+
+
+def _normal_quantile(p):
+    """Approximate Φ⁻¹(p) without scipy — accurate to ~0.01 for p in (0.9, 0.999)."""
+    import math
+    # Beasley-Springer-Moro approximation
+    a = [2.515517, 0.802853, 0.010328]
+    b = [1.432788, 0.189269, 0.001308]
+    t = math.sqrt(-2.0 * math.log(1.0 - p))
+    num = a[0] + a[1] * t + a[2] * t * t
+    den = 1.0 + b[0] * t + b[1] * t * t + b[2] * t * t * t
+    return t - num / den
+
+
 class ASVEnsembleExplainer:
     """Compute ASV over multiple user-supplied DAGs and summarize sensitivity.
 
