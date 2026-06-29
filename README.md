@@ -346,13 +346,16 @@ Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [do
 | Balanced tree | 15 | `exact_tree` (DP) | 2.8 ms |
 | Caterpillar | 10 | `exact_tree` (DP) | 170 µs |
 | Chain | 10 | `exact_dag` (dense DP) | **23 µs** |
-| Chain | 16 | `exact_dag` (dense DP) | **2.4 ms** |
+| Chain | 16 | `exact_dag` (dense DP, 65k states) | 3.0 ms |
+| Chain | 16 | `exact_dag_sparse` (17 order ideals, via `auto`) | **11 µs** (~280×) |
 | Chain | 24 | `exact_dag_sparse` | 15 µs |
 | Two parallel chains | 20 | `exact_dag` (dense, 1M states) | **55 ms** |
 | Two parallel chains | 20 | `exact_dag_sparse` (121 states) | **91 µs** (~600×) |
 | Diamond | 10 | `approx` seeded (10k samples) | **16 ms** |
+| Diamond | 10 | `approximate_adaptive_batched` (10k max) | 2.4 ms |
 | Chain | 20 | `approx` serial seeded (10k) | **19 ms** |
 | Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
+| Balanced tree | 31 | `approx` seeded (10k samples) | 83 ms |
 
 Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
 

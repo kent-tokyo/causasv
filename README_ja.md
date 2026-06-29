@@ -304,13 +304,16 @@ Apple M シリーズ（arm64、リリースビルド）での選択結果。`v(S
 | バランス木 | 15 | `exact_tree`（DP） | 2.8 ms |
 | キャタピラー | 10 | `exact_tree`（DP） | 170 µs |
 | チェーン | 10 | `exact_dag`（密 DP） | **23 µs** |
-| チェーン | 16 | `exact_dag`（密 DP） | **2.4 ms** |
+| チェーン | 16 | `exact_dag`（密 DP、65k 状態） | 3.0 ms |
+| チェーン | 16 | `exact_dag_sparse`（17 順序イデアル、`auto` 経由） | **11 µs**（約280倍速） |
 | チェーン | 24 | `exact_dag_sparse` | 15 µs |
 | 2本の並列チェーン | 20 | `exact_dag`（密、100万状態） | **55 ms** |
 | 2本の並列チェーン | 20 | `exact_dag_sparse`（121状態） | **91 µs**（約600倍速） |
 | ダイヤモンド | 10 | `approx` シード付き（10k サンプル） | **16 ms** |
+| ダイヤモンド | 10 | `approximate_adaptive_batched`（10k 上限） | 2.4 ms |
 | チェーン | 20 | `approx` シード付き直列（10k） | **19 ms** |
 | チェーン | 20 | `approx` 並列 4 スレッド（10k） | 7.4 ms |
+| バランス木 | 31 | `approx` シード付き（10k サンプル） | 83 ms |
 
 `cargo bench` で再現できます。
 
