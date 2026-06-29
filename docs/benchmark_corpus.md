@@ -4,7 +4,7 @@ A structured comparison of causasv methods across 8 canonical DAG shapes.
 
 Reproduce: `python examples/benchmark_corpus.py` (requires causasv installed via maturin).
 
-**Setup:** Apple M-series (arm64) · `v(S) = |S|` · n_samples = 5 000 · seed = 42
+**Setup:** Apple M-series (arm64) · Rust 1.96.0 stable · Python 3.13.6 · causasv v0.8.5 (`8ddf97f`) · release build · `v(S) = |S|` · n_samples = 5 000 · seed = 42
 
 ---
 

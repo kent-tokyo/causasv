@@ -53,3 +53,7 @@ jobs:
         run: |
           cd py
           ../.venv/bin/python tests/smoke_test.py
+      - name: Run quality_workflow example (no matplotlib)
+        run: |
+          cd py
+          ../.venv/bin/python ../examples/quality_workflow.py
