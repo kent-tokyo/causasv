@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::approx::{
     approximate_asv, approximate_asv_adaptive, approximate_asv_adaptive_batched,
     approximate_asv_batched, approximate_asv_uniform, approximate_asv_uniform_sparse,
+    approximate_asv_uniform_sparse_adaptive,
 };
 use crate::cache::value_cached;
 use crate::dag_dp::{compute_dp_ind, dag_exact_asv};
@@ -212,6 +213,35 @@ impl AsvExplainer {
             config,
             &self.parents_mask,
             2 * 1024 * 1024 * 1024, // 2 GiB — same as ExactDagConfig default
+        )
+    }
+
+    /// Adaptive uniform topological ordering sampler for sparse DAGs.
+    ///
+    /// Like `approximate_uniform_sparse` but with adaptive stopping: runs in batches until
+    /// per-node estimates stabilize (`rel_tol`) or `max_samples` is reached. Returns per-node
+    /// stderr and convergence flag. ESS = n_samples exactly (no IS weight variance).
+    pub fn approximate_uniform_sparse_adaptive<F>(
+        &self,
+        value_fn: F,
+        config: AdaptiveSamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        let n = self.dag.node_count();
+        if n > 63 {
+            return Err(CausasvError::InvalidConfig(format!(
+                "approximate_uniform_sparse_adaptive requires n ≤ 63, got {n}"
+            )));
+        }
+        self.dag.validate()?;
+        approximate_asv_uniform_sparse_adaptive(
+            &self.dag,
+            value_fn,
+            config,
+            &self.parents_mask,
+            2 * 1024 * 1024 * 1024,
         )
     }
 
