@@ -391,17 +391,21 @@ It solves one narrow problem:
 
 > Computing Asymmetric Shapley Values over a user-supplied causal DAG.
 
-| Tool | Focus | ASV / causal DAG |
-|------|-------|-----------------|
-| [SHAP](https://github.com/shap/shap) | General-purpose Shapley / SHAP | No — standard Shapley only |
-| [Captum](https://captum.ai/) | PyTorch model interpretability | No |
-| [shapr](https://github.com/NorskRegnesentral/shapr) | Conditional / causal Shapley (R + Python) | Yes — broader scope, R-first |
-| [shapflex](https://pypi.org/project/shapflex/) | ASV with causal knowledge (Python alpha) | Yes — similar concept |
-| **causasv** | ASV over user-supplied causal DAGs | **Core focus** |
+| Tool | Focus | DAG-aware ordering | Exact ASV | CI / stderr |
+|------|-------|--------------------|-----------|-------------|
+| [SHAP](https://github.com/shap/shap) | Generic feature attribution | No | No | limited |
+| [DoWhy](https://github.com/py-why/dowhy) | Causal effect estimation | Graph-based causal workflow | No | method-dependent |
+| [Captum](https://captum.ai/) | PyTorch model interpretability | No | No | No |
+| [shapiq](https://github.com/mmschlk/shapiq) | Shapley interactions (any order) | No | partial (different target) | benchmarked |
+| [shapr](https://github.com/NorskRegnesentral/shapr) | Conditional / causal Shapley (R + Python) | Yes — broader scope | No | R-first |
+| [shapflex](https://pypi.org/project/shapflex/) | ASV with causal knowledge (Python alpha) | Yes — similar concept | No | No |
+| **causasv** | DAG-aware ASV attribution | **Yes** | **Yes (exact or uniform sparse)** | **Yes (stderr + CI)** |
 
 The main differences from `shapr` and `shapflex`: `causasv` is a Rust-first engine
 that requires the user to supply an explicit causal DAG and a value function.
 It does not perform causal discovery and does not depend on the data distribution.
+`explain_quality()` / `auto_quality()` provide exact results when the DAG is sparse
+enough, with uncertainty quantification always available on approximate paths.
 
 ## Scope
 
