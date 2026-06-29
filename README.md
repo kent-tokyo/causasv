@@ -300,7 +300,7 @@ See [docs/comparison_shap.md](docs/comparison_shap.md) for a quantitative runtim
 
 ## Status
 
-Experimental — v0.8.5. Public API may change before v1.0.
+Experimental — v0.8.6. Public API may change before v1.0.
 
 ## Algorithm status
 

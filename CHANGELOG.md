@@ -5,7 +5,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.8.6] — 2026-06
 
 ### Added
 - `AsvExplainer::approximate_uniform_sparse_adaptive_batched()`: batched quality path — collects an entire convergence batch of topological orderings, deduplicates the prefix coalition masks they need, and calls `value_fn_batch` once per batch. Reduces Python GIL round-trips from O(n × batch_size) to O(unique_masks_per_batch). ESS = n_samples exactly (no IS variance). Requires n ≤ 63; falls back to IS-adaptive batch for n > 63.
