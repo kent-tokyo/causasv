@@ -266,7 +266,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## 状态
 
-实验性 — v0.8.4。在 v1.0 之前公共 API 可能会发生变化。
+实验性 — v0.8.5。在 v1.0 之前公共 API 可能会发生变化。
 
 ## 算法状态
 

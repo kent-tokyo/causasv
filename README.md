@@ -298,7 +298,7 @@ See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretat
 
 ## Status
 
-Experimental — v0.8.4. Public API may change before v1.0.
+Experimental — v0.8.5. Public API may change before v1.0.
 
 ## Algorithm status
 
