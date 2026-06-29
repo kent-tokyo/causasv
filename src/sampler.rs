@@ -252,6 +252,50 @@ pub(crate) fn sample_uniform_into(
     }
 }
 
+/// Uniform topological ordering sampler using lazily memoized dp_ind.
+///
+/// Like `sample_uniform_into` but uses a HashMap cache instead of the precomputed 2^n
+/// slice, making it feasible for n > 20 on sparse DAGs. Writes the result into `ordering`
+/// (cleared on entry). Returns `Err` if a dp_ind value overflows u64.
+pub(crate) fn sample_uniform_sparse_into(
+    rng: &mut StdRng,
+    parents_mask: &[u64],
+    n: usize,
+    dp_ind_cache: &mut std::collections::HashMap<u64, u64>,
+    ordering: &mut Vec<NodeId>,
+) -> Result<(), crate::error::CausasvError> {
+    use crate::dag_dp_sparse::dp_ind_lazy_pub;
+    ordering.clear();
+    let full = (1u64 << n) - 1;
+    let mut placed: u64 = 0;
+    for _ in 0..n {
+        let remaining = full ^ placed;
+        let total = dp_ind_lazy_pub(remaining, parents_mask, n, dp_ind_cache)?;
+        let r: u64 = if total > 1 {
+            rng.random_range(0..total)
+        } else {
+            0
+        };
+        let mut cum: u64 = 0;
+        let mut bits = remaining;
+        while bits != 0 {
+            let bit = bits & bits.wrapping_neg();
+            let i = bit.trailing_zeros() as usize;
+            bits ^= bit;
+            if parents_mask[i] & placed == parents_mask[i] {
+                let sub_count = dp_ind_lazy_pub(remaining ^ bit, parents_mask, n, dp_ind_cache)?;
+                cum += sub_count;
+                if r < cum {
+                    ordering.push(NodeId(i as u32));
+                    placed |= bit;
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn make_rng(seed: Option<u64>) -> StdRng {
     match seed {
         Some(s) => StdRng::seed_from_u64(s),

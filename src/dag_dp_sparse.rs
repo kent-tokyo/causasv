@@ -190,3 +190,46 @@ fn dp_ind_lazy(
     cache.insert(mask, result);
     Ok(result)
 }
+
+/// Public wrapper around `dp_ind_lazy` for use by the sparse uniform sampler in sampler.rs.
+pub(crate) fn dp_ind_lazy_pub(
+    mask: u64,
+    parents_mask: &[u64],
+    n: usize,
+    cache: &mut HashMap<u64, u64>,
+) -> Result<u64, crate::error::CausasvError> {
+    dp_ind_lazy(mask, parents_mask, n, cache)
+}
+
+/// BFS-count valid order ideals up to `state_budget`; returns `true` if the full DAG
+/// has at most that many, `false` if the budget is exceeded.
+///
+/// Does not compute dp_ind or call value_fn — this is a cheap preflight to decide
+/// whether exact_dag_sparse is worth running for n > 28.
+pub(crate) fn estimate_sparse_feasible(
+    dag: &Dag,
+    parents_mask: &[u64],
+    state_budget: usize,
+) -> bool {
+    use std::collections::HashSet;
+    let n = dag.node_count();
+    let mut visited: HashSet<u64> = HashSet::new();
+    let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+    visited.insert(0);
+    queue.push_back(0);
+    while let Some(s) = queue.pop_front() {
+        for (i, &pmask) in parents_mask.iter().enumerate().take(n) {
+            let bit = 1u64 << i;
+            if s & bit == 0 && pmask & s == pmask {
+                let ns = s | bit;
+                if visited.insert(ns) {
+                    if visited.len() > state_budget {
+                        return false;
+                    }
+                    queue.push_back(ns);
+                }
+            }
+        }
+    }
+    true
+}

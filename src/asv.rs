@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::approx::{
     approximate_asv, approximate_asv_adaptive, approximate_asv_adaptive_batched,
-    approximate_asv_batched, approximate_asv_uniform,
+    approximate_asv_batched, approximate_asv_uniform, approximate_asv_uniform_sparse,
 };
 use crate::cache::value_cached;
 use crate::dag_dp::{compute_dp_ind, dag_exact_asv};
-use crate::dag_dp_sparse::{ExactDagConfig, dag_exact_asv_sparse};
+use crate::dag_dp_sparse::{ExactDagConfig, dag_exact_asv_sparse, estimate_sparse_feasible};
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
@@ -178,6 +178,43 @@ impl AsvExplainer {
         approximate_asv_uniform(value_fn, config, &dp_ind, &self.parents_mask)
     }
 
+    /// Uniform topological ordering sampler for sparse DAGs with n > 20.
+    ///
+    /// Uses lazily memoized dp_ind (HashMap) instead of a precomputed 2^n table,
+    /// enabling uniform sampling for n up to 63 on DAGs with manageable state spaces.
+    /// Every linear extension is sampled with equal probability — ESS = n_samples exactly,
+    /// with no IS weight variance. Returns `Err(Overflow)` if the dp_ind cache exceeds
+    /// 2 GiB (same memory limit as `exact_dag_sparse`).
+    pub fn approximate_uniform_sparse<F>(
+        &self,
+        value_fn: F,
+        config: SamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        let n = self.dag.node_count();
+        if n > 63 {
+            return Err(CausasvError::InvalidConfig(format!(
+                "approximate_uniform_sparse requires n ≤ 63 (u64 bitmask), got {n}; \
+                 use approximate() for larger DAGs"
+            )));
+        }
+        if config.n_samples == 0 {
+            return Err(CausasvError::InvalidConfig(
+                "n_samples must be > 0".to_string(),
+            ));
+        }
+        self.dag.validate()?;
+        approximate_asv_uniform_sparse(
+            &self.dag,
+            value_fn,
+            config,
+            &self.parents_mask,
+            2 * 1024 * 1024 * 1024, // 2 GiB — same as ExactDagConfig default
+        )
+    }
+
     /// Exact ASV for rooted directed trees. Returns Err(NotRootedTree) if the graph is not one.
     /// Validates tree structure before computing; otherwise identical to `exact`.
     pub fn exact_tree<F>(&self, value_fn: F) -> Result<AsvResult, CausasvError>
@@ -238,7 +275,9 @@ impl AsvExplainer {
     /// - 8 < n ≤ 20: `exact_dag_sparse` if edge_count ≤ 2n (sparse heuristic), else `exact_dag`
     /// - 20 < n ≤ 28: `exact_dag_sparse` — sparse BFS over order ideals;
     ///   falls back to `approximate` on memory-limit or overflow errors
-    /// - n > 28: `approximate` — IS-weighted sampling
+    /// - 28 < n ≤ 63: `exact_dag_sparse` if order ideal count ≤ 250k (sparse preflight),
+    ///   else `approximate`
+    /// - n > 63: `approximate` — u64 bitmask limit
     ///
     /// `config` is used only when the approximate path is taken.
     pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
@@ -295,6 +334,35 @@ impl AsvExplainer {
                     Ok(r)
                 }
                 Err(e) => Err(e),
+            }
+        } else if n <= 63 {
+            // For n > 28 and n ≤ 63: run a cheap BFS preflight to count order ideals.
+            // If the state count is manageable, use exact_dag_sparse with an elevated
+            // max_nodes limit; otherwise fall back to approximate.
+            if estimate_sparse_feasible(&self.dag, &self.parents_mask, 250_000) {
+                let sparse_cfg = ExactDagConfig {
+                    max_nodes: n,
+                    ..ExactDagConfig::default()
+                };
+                match self.exact_dag_sparse_with_config(|c| value_fn(c), &sparse_cfg) {
+                    Ok(mut r) => {
+                        r.method_used = Some("exact_dag_sparse");
+                        Ok(r)
+                    }
+                    Err(CausasvError::InvalidConfig(ref msg))
+                    | Err(CausasvError::Overflow(ref msg)) => {
+                        let mut r = self.approximate(value_fn, config)?;
+                        r.fallback_from = Some("exact_dag_sparse".to_string());
+                        r.fallback_reason = Some(msg.clone());
+                        r.method_used = Some("approx");
+                        Ok(r)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                let mut r = self.approximate(value_fn, config)?;
+                r.method_used = Some("approx");
+                Ok(r)
             }
         } else {
             let mut r = self.approximate(value_fn, config)?;
