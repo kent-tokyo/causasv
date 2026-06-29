@@ -572,6 +572,99 @@ impl PyASVExplainer {
         Ok(d)
     }
 
+    /// Quality-first one-stop entry point: exact when feasible, uniform sparse adaptive
+    /// otherwise. Always returns stderr and ci_low/ci_high when ci is set.
+    ///
+    /// Uses `auto_quality` dispatch under the hood — the same as `explain_adaptive` but
+    /// exact methods are tried first and the approximate fallback has ESS = n_samples.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value_fn, min_samples=1_000, max_samples=100_000,
+                        batch_size=1_000, rel_tol=0.01, seed=None, ci=None))]
+    fn explain_quality<'py>(
+        &self,
+        py: Python<'py>,
+        value_fn: Py<PyAny>,
+        min_samples: usize,
+        max_samples: usize,
+        batch_size: usize,
+        rel_tol: f64,
+        seed: Option<u64>,
+        ci: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if let Some(ci_level) = ci
+            && !(0.0 < ci_level && ci_level < 1.0)
+        {
+            return Err(PyValueError::new_err(
+                "ci must be in (0, 1), e.g. ci=0.95 for a 95% interval",
+            ));
+        }
+        let names = &self.names;
+        let rust_fn = move |coalition: &[NodeId]| -> Result<f64, CausasvError> {
+            Python::attach(|py| {
+                let name_list: Vec<&str> = coalition
+                    .iter()
+                    .map(|id| names[id.0 as usize].as_str())
+                    .collect();
+                value_fn
+                    .call1(py, (name_list,))
+                    .and_then(|r| r.extract::<f64>(py))
+                    .map_err(|e| CausasvError::ValueFunctionError(e.to_string()))
+            })
+        };
+        let config = AdaptiveSamplingConfig {
+            min_samples,
+            max_samples,
+            batch_size,
+            rel_tol,
+            ess_ratio_min: 0.0, // uniform sparse: ESS always = n_samples, gate is irrelevant
+            seed,
+        };
+        let result = self.inner.auto_quality(rust_fn, config).map_err(py_err)?;
+        let ess_ratio = result
+            .effective_sample_size
+            .map(|e| e / result.n_samples as f64);
+        let values_map = self.values_map(&result);
+        let stderr_map: HashMap<String, f64> = result
+            .stderr
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .map(|(id, &v)| (self.names[id.0 as usize].clone(), v))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let d = PyDict::new(py);
+        d.set_item("values", &values_map)?;
+        d.set_item("ess", result.effective_sample_size)?;
+        d.set_item("ess_ratio", ess_ratio)?;
+        d.set_item("n_samples", result.n_samples)?;
+        d.set_item("seed", result.seed)?;
+        d.set_item("is_exact", result.is_exact)?;
+        d.set_item(
+            "selected_method",
+            result.method_used.unwrap_or("auto_quality"),
+        )?;
+        d.set_item("converged", result.converged)?;
+        d.set_item("stderr", &stderr_map)?;
+        d.set_item("fallback_from", result.fallback_from.as_deref())?;
+        d.set_item("fallback_reason", result.fallback_reason.as_deref())?;
+        if let Some(ci_level) = ci {
+            let z = normal_quantile((1.0 + ci_level) / 2.0);
+            let ci_low: HashMap<String, f64> = values_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v - z * stderr_map.get(k).copied().unwrap_or(0.0)))
+                .collect();
+            let ci_high: HashMap<String, f64> = values_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v + z * stderr_map.get(k).copied().unwrap_or(0.0)))
+                .collect();
+            d.set_item("ci", ci_level)?;
+            d.set_item("ci_low", ci_low)?;
+            d.set_item("ci_high", ci_high)?;
+        }
+        Ok(d)
+    }
+
     /// Adaptive approximate ASV: runs sampling in batches until convergence or max_samples.
     ///
     /// Returns a dict with keys: values, ess, ess_ratio, n_samples, seed, is_exact,

@@ -14,6 +14,20 @@
 
 `causasv` computes **Asymmetric Shapley Values (ASV)** for causal feature attribution over user-supplied DAGs. It is a Rust-first engine with Python bindings, designed for XAI workflows where feature importance should respect known causal structure.
 
+## When to use causasv
+
+**Use causasv when:**
+- you have a known causal DAG among your features
+- standard SHAP may assign credit through descendants or mediators
+- you need exact or uncertainty-aware approximate ASV
+- you want a fast Rust core with Python bindings and CI bounds on estimates
+
+**Do not use causasv when:**
+- you do not have a causal DAG (→ use SHAP or Captum)
+- you need generic model explainability without causal structure
+- you need deep learning layer or neuron attribution
+- you need causal effect estimation or discovery itself (→ use DoWhy)
+
 ## What is ASV?
 
 Asymmetric Shapley Values (ASV) generalize Shapley values by averaging only over **topologically valid orderings** of features, rather than all permutations. Given a causal DAG G and a value function v:

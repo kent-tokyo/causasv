@@ -401,6 +401,87 @@ impl AsvExplainer {
         }
     }
 
+    /// Quality-first automatic dispatch: like `auto()` but the IS approximate fallback is
+    /// replaced by `approximate_uniform_sparse_adaptive` (zero IS variance, ESS = n_samples,
+    /// stderr + CI always available). For n > 63 falls back to `approximate_adaptive`.
+    ///
+    /// Every code path returns `stderr` and `converged` — use `explain_quality()` in Python
+    /// for the friendliest interface.
+    ///
+    /// Dispatch rules:
+    /// - n ≤ 8: `exact`
+    /// - rooted tree: `exact_tree`
+    /// - 8 < n ≤ 20: `exact_dag_sparse` (sparse-first) or `exact_dag`
+    /// - 20 < n ≤ 63: `exact_dag_sparse`; falls back to `approximate_uniform_sparse_adaptive`
+    /// - n > 63: `approximate_adaptive`
+    pub fn auto_quality<F>(
+        &self,
+        value_fn: F,
+        config: AdaptiveSamplingConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
+        self.dag.validate()?;
+        let n = self.dag.node_count();
+        if n <= 8 {
+            let mut r = self.exact(value_fn)?;
+            r.method_used = Some("exact");
+            Ok(r)
+        } else if self.is_rooted_tree {
+            let mut r = self.exact_tree(value_fn)?;
+            r.method_used = Some("exact_tree");
+            Ok(r)
+        } else if n <= 20 {
+            let m = self.dag.edge_count();
+            if m <= 2 * n {
+                match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default())
+                {
+                    Ok(mut r) => {
+                        r.method_used = Some("exact_dag_sparse");
+                        Ok(r)
+                    }
+                    Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
+                        let mut r = self.exact_dag(value_fn)?;
+                        r.method_used = Some("exact_dag");
+                        Ok(r)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                let mut r = self.exact_dag(value_fn)?;
+                r.method_used = Some("exact_dag");
+                Ok(r)
+            }
+        } else if n <= 63 {
+            // Try sparse exact first; fall back to uniform_sparse_adaptive (not IS approx).
+            let sparse_cfg = ExactDagConfig {
+                max_nodes: n.min(63),
+                ..ExactDagConfig::default()
+            };
+            match self.exact_dag_sparse_with_config(|c| value_fn(c), &sparse_cfg) {
+                Ok(mut r) => {
+                    r.method_used = Some("exact_dag_sparse");
+                    Ok(r)
+                }
+                Err(CausasvError::InvalidConfig(ref msg))
+                | Err(CausasvError::Overflow(ref msg)) => {
+                    let mut r = self.approximate_uniform_sparse_adaptive(value_fn, config)?;
+                    r.fallback_from = Some("exact_dag_sparse".to_string());
+                    r.fallback_reason = Some(msg.clone());
+                    r.method_used = Some("uniform_sparse_adaptive");
+                    Ok(r)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            // n > 63: uniform_sparse_adaptive requires n ≤ 63; use IS adaptive.
+            let mut r = self.approximate_adaptive(value_fn, config)?;
+            r.method_used = Some("approx_adaptive");
+            Ok(r)
+        }
+    }
+
     /// Adaptive approximate ASV: runs sampling in batches and stops when estimates
     /// converge (relative change < `config.rel_tol` and ESS ratio ≥ `config.ess_ratio_min`),
     /// or when `config.max_samples` is reached.
