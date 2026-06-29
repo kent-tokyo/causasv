@@ -110,7 +110,7 @@ info = explain_quality(
 print(info["values"])           # dict[str, float] — ASV per feature
 print(info["ci_low"])           # dict[str, float] — 95% CI lower bounds
 print(info["ci_high"])          # dict[str, float] — 95% CI upper bounds
-print(info["selected_method"])  # e.g. "exact_dag_sparse" or "uniform_sparse_adaptive"
+print(info["selected_method"])  # e.g. "exact_dag_sparse", "uniform_sparse_adaptive", or "uniform_sparse_adaptive_batch"
 print(info["stderr"])           # dict[str, float] — per-feature standard error
 ```
 
@@ -153,27 +153,22 @@ print(info["converged"])  # bool — True if rel_tol was reached before max_samp
 print(info["ess_ratio"])  # float — ESS / n_samples; close to 1 is good
 ```
 
-For batched coalitions (reduced Python GIL overhead for large models), pass `value_fn_batch` or call `explain_adaptive_batch()`:
+For large models where calling the value function once per coalition is slow, pass `value_fn_batch` to `explain_quality()`. This routes to uniform sparse adaptive batch sampling (ESS = n_samples, no IS variance, CI always returned) for n ≤ 63:
 
 ```python
 # value_fn_batch receives list[list[str]] and must return list[float]
-info = explainer.explain_with_diagnostics(
+info = explain_quality(
+    explainer,
     value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
-    method="approx",
-    n_samples=50_000,
-    batch_size=512,
+    ci=0.95,
     seed=42,
 )
-
-# Adaptive variant with batched evaluation
-info = explainer.explain_adaptive_batch(
-    value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
-    min_samples=1_000,
-    max_samples=100_000,
-    batch_size=1_000,
-    seed=42,
-)
+print(info["values"])           # dict[str, float]
+print(info["ci_low"])           # dict[str, float]
+print(info["selected_method"])  # "uniform_sparse_adaptive_batch" (or "approx_adaptive_batch" for n>63)
 ```
+
+The batched path reduces Python GIL round-trips from O(n × batch_size) to O(unique_masks_per_batch). For explicit IS-adaptive batched evaluation, use `explainer.explain_adaptive_batch()` directly.
 
 For deterministic parallel approximation, pass `parallel=True` with a `seed`:
 
