@@ -263,6 +263,35 @@ fn test_uniform_sparse_adaptive_converges() {
     assert_eq!(ess, result.n_samples as f64, "ESS must equal n_samples");
 }
 
+/// uniform_sparse_adaptive converges to the same values as exact_dag on a non-additive
+/// value function.  Validates that the sampler is unbiased beyond the additive identity.
+#[test]
+fn test_uniform_sparse_adaptive_matches_exact_nonadditive() {
+    // v(S) = |S|² on the diamond (4 nodes, 2 orderings).
+    // exact: φ_a=1, φ_b=4, φ_c=4, φ_d=7 (constant marginals ⟹ zero variance in each run).
+    fn v_sq(s: &[NodeId]) -> Result<f64, causasv::CausasvError> {
+        Ok((s.len() as f64).powi(2))
+    }
+    let dag = make_diamond();
+    let explainer = AsvExplainer::new(dag);
+    let exact = explainer.exact_dag(v_sq).unwrap();
+    let adaptive = explainer
+        .approximate_uniform_sparse_adaptive(
+            v_sq,
+            AdaptiveSamplingConfig::new()
+                .with_max_samples(20_000)
+                .with_seed(7),
+        )
+        .unwrap();
+    for (&node, &phi_e) in &exact.values {
+        let phi_a = adaptive.values[&node];
+        assert!(
+            (phi_a - phi_e).abs() < 0.20,
+            "node {node:?}: exact={phi_e:.4}, adaptive={phi_a:.4}"
+        );
+    }
+}
+
 /// Memory limit error: approximate_uniform_sparse_adaptive rejects oversized dp_ind cache.
 #[test]
 fn test_uniform_sparse_adaptive_memory_limit() {

@@ -43,6 +43,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Syntax check Python files
+        run: |
+          python -m py_compile \
+            py/causasv/__init__.py py/causasv/helpers.py py/causasv/plot.py \
+            py/tests/smoke_test.py \
+            examples/quality_workflow.py examples/benchmark_corpus.py
       - name: Build and test Python bindings
         run: |
           python -m venv .venv
@@ -57,3 +63,7 @@ jobs:
         run: |
           cd py
           ../.venv/bin/python ../examples/quality_workflow.py
+      - name: Run benchmark_corpus example (no matplotlib)
+        run: |
+          cd py
+          ../.venv/bin/python ../examples/benchmark_corpus.py
