@@ -10,7 +10,7 @@ use crate::graph::{Dag, NodeId};
 use crate::numerics::kahan_add;
 use crate::sampler::{
     AdaptiveSamplingConfig, SampledOrdering, SamplerScratch, SamplingConfig, make_rng,
-    sample_one_into, sample_uniform_into, worker_seed,
+    sample_one_into, sample_uniform_into, sample_uniform_sparse_into, worker_seed,
 };
 
 /// Self-normalized importance sampling estimator for ASV.
@@ -43,38 +43,41 @@ where
     let base_in_deg = dag.in_degrees();
 
     let (numerator, denominator, sum_w_sq) = if !parallel {
-        // Seeded single-threaded: collect all samples first, then apply per-batch
-        // log-weight normalization before exp() for consistency with the batched paths.
-        // Self-normalized IS is invariant to a common scale factor, so subtracting
-        // max(log_w) does not change ASV values but prevents potential overflow.
+        // Seeded single-threaded: one-pass streaming with incremental log-weight rescaling.
+        // When a new max log-weight is seen, all accumulated sums are rescaled so every
+        // sample shares the same normalization constant — same validity argument as the
+        // batched paths, without storing all samples first.
         let mut rng = make_rng(seed);
         let mut numerator = vec![0.0f64; n];
-        let mut num_comp = vec![0.0f64; n]; // Kahan compensation for numerator[i]
+        let mut num_comp = vec![0.0f64; n];
         let mut denominator = 0.0f64;
         let mut denom_comp = 0.0f64;
         let mut sum_w_sq = 0.0f64;
         let mut wsq_comp = 0.0f64;
         let mut cache = HashMap::<u64, f64>::new();
         let mut scratch = SamplerScratch::new(n);
-        let samples: Vec<SampledOrdering> = (0..config.n_samples)
-            .map(|_| {
-                let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
-                SampledOrdering {
-                    ordering: scratch.ordering.clone(),
-                    log_q,
+        let mut global_max_log_w = f64::NEG_INFINITY;
+        for _ in 0..config.n_samples {
+            let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
+            let log_w = -log_q;
+            if log_w > global_max_log_w {
+                let scale = (global_max_log_w - log_w).exp(); // ∈ (0,1]; rescale prior sums
+                let scale_sq = scale * scale;
+                for i in 0..n {
+                    numerator[i] *= scale;
+                    num_comp[i] *= scale;
                 }
-            })
-            .collect();
-        let max_log_w = samples
-            .iter()
-            .map(|s| -s.log_q)
-            .fold(f64::NEG_INFINITY, f64::max);
-        for sample in &samples {
-            let w = ((-sample.log_q) - max_log_w).exp(); // log-normalized IS weight
+                denominator *= scale;
+                denom_comp *= scale;
+                sum_w_sq *= scale_sq;
+                wsq_comp *= scale_sq;
+                global_max_log_w = log_w;
+            }
+            let w = (log_w - global_max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
-            for &node in &sample.ordering {
+            for &node in &scratch.ordering {
                 let without = prefix_mask;
                 let with_node = prefix_mask | (1u64 << node.0);
                 let delta = value_cached(&mut cache, &value_fn, with_node)?
@@ -792,6 +795,79 @@ where
         seed: config.seed,
         is_exact: false,
         effective_sample_size: Some(n_f), // uniform sampling: ESS = n_samples exactly
+        converged: None,
+        stderr: None,
+        n_order_ideals: None,
+        state_ratio: None,
+        memory_mb: None,
+        fallback_from: None,
+        fallback_reason: None,
+        method_used: None,
+    })
+}
+
+/// Uniform topological ordering sampler for sparse DAGs with n > 20.
+///
+/// Like `approximate_asv_uniform` but uses a lazily memoized dp_ind HashMap instead of
+/// the precomputed 2^n slice. Each linear extension is sampled with equal probability
+/// 1/L(G), so every sample has weight 1 — ESS = n_samples exactly, no IS variance.
+///
+/// `memory_limit_bytes` caps the dp_ind cache; returns `Err(Overflow)` if exceeded.
+pub(crate) fn approximate_asv_uniform_sparse<F>(
+    _dag: &Dag,
+    value_fn: F,
+    config: SamplingConfig,
+    parents_mask: &[u64],
+    memory_limit_bytes: usize,
+) -> Result<AsvResult, CausasvError>
+where
+    F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+{
+    let n = parents_mask.len();
+    let mut rng = make_rng(config.seed);
+    let mut dp_ind_cache: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut value_cache = HashMap::<u64, f64>::new();
+    let mut numerator = vec![0.0f64; n];
+    let mut num_comp = vec![0.0f64; n];
+    let mut ordering = Vec::with_capacity(n);
+
+    for _ in 0..config.n_samples {
+        sample_uniform_sparse_into(&mut rng, parents_mask, n, &mut dp_ind_cache, &mut ordering)?;
+        // Memory guard: ~80 bytes per HashMap entry (key + value + overhead).
+        if dp_ind_cache.len() * 80 > memory_limit_bytes {
+            return Err(CausasvError::Overflow(format!(
+                "approximate_uniform_sparse: dp_ind cache exceeded {}MB at {} entries; \
+                 use approximate() for this DAG",
+                memory_limit_bytes / (1024 * 1024),
+                dp_ind_cache.len(),
+            )));
+        }
+        let mut prefix_mask: u64 = 0;
+        for &node in &ordering {
+            let without = prefix_mask;
+            let with_node = prefix_mask | (1u64 << node.0);
+            let delta = value_cached(&mut value_cache, &value_fn, with_node)?
+                - value_cached(&mut value_cache, &value_fn, without)?;
+            kahan_add(
+                &mut numerator[node.0 as usize],
+                &mut num_comp[node.0 as usize],
+                delta,
+            );
+            prefix_mask = with_node;
+        }
+    }
+
+    let n_f = config.n_samples as f64;
+    let values = (0..n)
+        .map(|i| (NodeId(i as u32), numerator[i] / n_f))
+        .collect();
+
+    Ok(AsvResult {
+        values,
+        n_samples: config.n_samples,
+        seed: config.seed,
+        is_exact: false,
+        effective_sample_size: Some(n_f),
         converged: None,
         stderr: None,
         n_order_ideals: None,
