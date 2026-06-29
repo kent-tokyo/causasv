@@ -301,6 +301,7 @@ See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretat
 - Use `auto_quality` (or `explain_quality()` in Python) when you need confidence intervals or a guaranteed ESS = n_samples on approximate paths. Every code path returns `stderr`; the approximate fallback is uniform sparse adaptive (not IS-weighted), so ESS is always equal to n_samples.
 
 See [docs/benchmark_corpus.md](docs/benchmark_corpus.md) for measured runtime and method selection across 8 canonical DAGs.
+See [docs/comparison_shap.md](docs/comparison_shap.md) for a quantitative runtime and attribution comparison against SHAP KernelExplainer.
 
 ## Status
 
