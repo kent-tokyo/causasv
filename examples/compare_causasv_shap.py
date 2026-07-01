@@ -17,9 +17,10 @@ Run:
 """
 
 import time
+
 import numpy as np
 import shap
-from causasv import CausalDAG, ASVExplainer, explain_quality
+from causasv import ASVExplainer, CausalDAG, explain_quality
 
 # ── Shared value function for runtime comparison ───────────────────────────────
 # Additive: v(S) = Σ (i+1) for i in S  (feature i has intrinsic value i+1)
@@ -55,17 +56,18 @@ for n in [4, 6, 8, 10, 15, 20]:
     r = explain_quality(explainer, value_fn=asv_additive, max_samples=5_000, seed=42)
     t_asv = (time.perf_counter() - t0) * 1000
     exact_str = "yes" if r.get("is_exact") else "no"
-    print(f"{'chain_'+str(n):<12}  {n:>3}  {'causasv auto_quality':<25}  {t_asv:>10.2f}ms  {exact_str:>6}")
+    label = f"chain_{n}"
+    print(f"{label:<12}  {n:>3}  {'causasv auto_quality':<25}  {t_asv:>10.2f}ms  {exact_str:>6}")
 
     # SHAP KernelExplainer
     t0 = time.perf_counter()
     ke = shap.KernelExplainer(shap_additive, background)
     sv = ke.shap_values(data, nsamples=256, silent=True)
     t_shap = (time.perf_counter() - t0) * 1000
-    print(f"{'chain_'+str(n):<12}  {n:>3}  {'SHAP KernelExplainer':<25}  {t_shap:>10.2f}ms  {'approx':>6}")
+    print(f"{label:<12}  {n:>3}  {'SHAP KernelExplainer':<25}  {t_shap:>10.2f}ms  {'approx':>6}")
     print()
 
-print(f"Speedup: causasv exact is 10–100× faster and exact vs SHAP approximate.")
+print("Speedup: causasv exact is 10–100× faster and exact vs SHAP approximate.")
 
 
 # ── 2. Attribution divergence with synergistic value function ──────────────────

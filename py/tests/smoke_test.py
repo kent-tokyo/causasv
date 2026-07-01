@@ -1,6 +1,5 @@
 """Smoke test for top-level public API: explain_quality, plot import."""
-from causasv import CausalDAG, ASVExplainer, explain_quality
-from causasv import plot
+from causasv import ASVExplainer, CausalDAG, explain_quality, plot
 
 dag = CausalDAG.from_edges([("A", "B"), ("B", "C")])
 explainer = ASVExplainer(dag)
