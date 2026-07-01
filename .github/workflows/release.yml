@@ -37,17 +37,21 @@ jobs:
 
   linux-wheels:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v7
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: py
+          target: ${{ matrix.target }}
           command: build
           args: --release --out ../dist
           manylinux: auto
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-wheels
+          name: linux-wheels-${{ matrix.target }}
           path: dist
 
   macos-wheels:

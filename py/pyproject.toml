@@ -6,10 +6,18 @@ build-backend = "maturin"
 name = "causasv"
 version = "0.8.6"
 requires-python = ">=3.9"
-classifiers = ["Programming Language :: Python :: 3"]
+dynamic = ["description", "readme", "license", "keywords"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "ruff"]
 
 [tool.pytest.ini_options]
 markers = ["slow: mark test as slow-running (excluded from default CI run)"]
@@ -19,3 +27,10 @@ addopts = "-m 'not slow'"
 features = ["python"]
 manifest-path = "../Cargo.toml"
 python-source = "."
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
