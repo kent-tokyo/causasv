@@ -201,6 +201,14 @@ pub(crate) fn dp_ind_lazy_pub(
     dp_ind_lazy(mask, parents_mask, n, cache)
 }
 
+/// Order-ideal count above which `dag_exact_asv_sparse`'s memory guard would reject
+/// the DAG (that guard rejects once `dp_fwd.len()` times 80 bytes exceeds
+/// `config.memory_limit_bytes`). Lets a preflight check make the same accept/reject
+/// decision as that guard, proactively instead of via a caught error.
+pub(crate) fn sparse_state_budget(config: &ExactDagConfig) -> usize {
+    config.memory_limit_bytes / 80
+}
+
 /// BFS-count valid order ideals up to `state_budget`; returns `true` if the full DAG
 /// has at most that many, `false` if the budget is exceeded.
 ///

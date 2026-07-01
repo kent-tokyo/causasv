@@ -291,3 +291,48 @@ fn test_auto_fallback_to_approx_on_overflow() {
     assert_eq!(result.method_used, Some("approx"));
     assert!(!result.is_exact);
 }
+
+#[test]
+#[ignore = "slow: BFS through ~1M order ideals (18-node antichain component)"]
+fn test_auto_20_28_range_stays_exact_above_250k_order_ideals() {
+    // An 18-node antichain (no edges) disjoint-unioned with a 3-node chain (n=21,
+    // in the (20,28] range): order ideals = 2^18 * (3+1) = 1,048,576 — comfortably
+    // above the 250k budget used for n>28, but far below the ~26.8M memory-guard
+    // budget that n in (20,28] actually uses (confirmed: linear extension count
+    // 21!/3! ≈ 8.5e18 stays under u64::MAX, so this doesn't hit the *other*
+    // failure mode either). This guards against a regression where a proactive
+    // preflight added to the (20,28] branch would use the wrong (250k) budget and
+    // silently downgrade this DAG from exact to approximate.
+    let mut dag = Dag::new();
+    for i in 0..18 {
+        dag.add_node(&format!("a{i}"));
+    }
+    let mut chain = Vec::new();
+    for i in 0..3 {
+        chain.push(dag.add_node(&format!("c{i}")));
+    }
+    dag.add_edge(chain[0], chain[1]).unwrap();
+    dag.add_edge(chain[1], chain[2]).unwrap();
+    assert_eq!(dag.node_count(), 21);
+
+    let explainer = AsvExplainer::new(dag);
+    let result = explainer
+        .auto(
+            |c| Ok(c.len() as f64),
+            SamplingConfig::new(500).with_seed(0),
+        )
+        .unwrap();
+
+    assert!(
+        result.is_exact,
+        "expected exact_dag_sparse, got approx fallback"
+    );
+    assert_eq!(result.method_used, Some("exact_dag_sparse"));
+    assert_eq!(result.n_order_ideals, Some(1_048_576));
+
+    let total: f64 = result.values.values().sum();
+    assert!(
+        (total - 21.0).abs() < 1e-9,
+        "efficiency axiom: expected 21.0, got {total}"
+    );
+}
