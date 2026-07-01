@@ -7,12 +7,20 @@ use crate::approx::{
 };
 use crate::cache::value_cached;
 use crate::dag_dp::{compute_dp_ind, dag_exact_asv};
-use crate::dag_dp_sparse::{ExactDagConfig, dag_exact_asv_sparse, estimate_sparse_feasible};
+use crate::dag_dp_sparse::{
+    ExactDagConfig, dag_exact_asv_sparse, estimate_sparse_feasible, sparse_state_budget,
+};
 use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
 use crate::topo::enumerate_topos;
 use crate::tree::tree_exact_asv;
+
+/// Order-ideal budget for the `auto`/`auto_quality` sparse preflight in the n > 28
+/// range: a performance-oriented cap well below the memory guard's actual ceiling,
+/// chosen so exact computation isn't attempted when it would take unreasonably long
+/// even though it might still fit in memory.
+const SPARSE_PREFLIGHT_BUDGET: usize = 250_000;
 
 /// Result of an ASV computation.
 #[derive(Debug)]
@@ -303,8 +311,9 @@ impl AsvExplainer {
     /// - n ≤ 8: `exact` — brute-force, lowest overhead for small n
     /// - n > 8, rooted directed tree: `exact_tree` — order-ideal DP
     /// - 8 < n ≤ 20: `exact_dag_sparse` if edge_count ≤ 2n (sparse heuristic), else `exact_dag`
-    /// - 20 < n ≤ 28: `exact_dag_sparse` — sparse BFS over order ideals;
-    ///   falls back to `approximate` on memory-limit or overflow errors
+    /// - 20 < n ≤ 28: sparse preflight against the memory-guard's own state budget
+    ///   (~2 GiB / 80 bytes) → `exact_dag_sparse`; preflight failure or overflow error
+    ///   falls back to `approximate`
     /// - 28 < n ≤ 63: `exact_dag_sparse` if order ideal count ≤ 250k (sparse preflight),
     ///   else `approximate`
     /// - n > 63: `approximate` — u64 bitmask limit
@@ -348,9 +357,29 @@ impl AsvExplainer {
                 Ok(r)
             }
         } else if n <= 28 {
+            let sparse_cfg = ExactDagConfig::default();
+            // Proactive preflight using the same state budget as exact_dag_sparse's own
+            // memory guard: makes the identical accept/reject decision as the reactive
+            // Overflow/InvalidConfig catch below, just without paying for a doomed BFS
+            // first. The catch below stays as a safety net for the orthogonal failure
+            // mode (u64 linear-extension-count overflow), which this preflight can't see.
+            if !estimate_sparse_feasible(
+                &self.dag,
+                &self.parents_mask,
+                sparse_state_budget(&sparse_cfg),
+            ) {
+                let mut r = self.approximate(value_fn, config)?;
+                r.fallback_from = Some("exact_dag_sparse".to_string());
+                r.fallback_reason = Some(format!(
+                    "order ideal count exceeds sparse memory budget ({} states)",
+                    sparse_state_budget(&sparse_cfg)
+                ));
+                r.method_used = Some("approx");
+                return Ok(r);
+            }
             // Use a closure to borrow value_fn without consuming it, so we can
             // fall back to approximate if sparse DP hits the memory or overflow limit.
-            match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default()) {
+            match self.exact_dag_sparse_with_config(|c| value_fn(c), &sparse_cfg) {
                 Ok(mut r) => {
                     r.method_used = Some("exact_dag_sparse");
                     Ok(r)
@@ -369,7 +398,7 @@ impl AsvExplainer {
             // For n > 28 and n ≤ 63: run a cheap BFS preflight to count order ideals.
             // If the state count is manageable, use exact_dag_sparse with an elevated
             // max_nodes limit; otherwise fall back to approximate.
-            if estimate_sparse_feasible(&self.dag, &self.parents_mask, 250_000) {
+            if estimate_sparse_feasible(&self.dag, &self.parents_mask, SPARSE_PREFLIGHT_BUDGET) {
                 let sparse_cfg = ExactDagConfig {
                     max_nodes: n,
                     ..ExactDagConfig::default()
@@ -457,8 +486,8 @@ impl AsvExplainer {
         } else if n <= 63 {
             // Borrow value_fn so the closure can be used in multiple fallback arms.
             let vfn = &value_fn;
-            // Cheap preflight: count order ideals up to 250k before committing to full BFS.
-            if estimate_sparse_feasible(&self.dag, &self.parents_mask, 250_000) {
+            // Cheap preflight: count order ideals up to the budget before committing to full BFS.
+            if estimate_sparse_feasible(&self.dag, &self.parents_mask, SPARSE_PREFLIGHT_BUDGET) {
                 let sparse_cfg = ExactDagConfig {
                     max_nodes: n.min(63),
                     ..ExactDagConfig::default()
