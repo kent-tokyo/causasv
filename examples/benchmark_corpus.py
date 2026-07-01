@@ -13,7 +13,7 @@ Output: one row per (DAG, method) with timing and quality metrics.
 
 import time
 
-from causasv import CausalDAG, ASVExplainer, explain_quality
+from causasv import ASVExplainer, CausalDAG
 
 # ── DAG corpus ─────────────────────────────────────────────────────────────────
 

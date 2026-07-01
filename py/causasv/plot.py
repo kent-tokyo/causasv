@@ -102,7 +102,13 @@ def waterfall(values, *, base_value=0.0, title="ASV Waterfall", ax=None, figsize
         _, ax = plt.subplots(figsize=figsize)
 
     ax.bar(labels, heights, bottom=bottoms, color=colors, edgecolor="white", linewidth=0.5)
-    ax.axhline(base_value, color="black", linewidth=0.6, linestyle="--", label=f"base = {base_value:.3f}")
+    ax.axhline(
+        base_value,
+        color="black",
+        linewidth=0.6,
+        linestyle="--",
+        label=f"base = {base_value:.3f}",
+    )
     ax.set_title(title)
     ax.set_ylabel("Value")
     ax.legend(fontsize=8)

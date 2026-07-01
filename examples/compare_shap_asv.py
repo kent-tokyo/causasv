@@ -9,7 +9,8 @@ Requires: causasv installed (maturin develop --features python from py/)
 """
 
 import itertools
-from causasv import CausalDAG, ASVExplainer
+
+from causasv import ASVExplainer, CausalDAG
 
 NODES = ["A", "B", "C"]
 NODE_VALUES = {"A": 1.0, "B": 2.0, "C": 4.0}

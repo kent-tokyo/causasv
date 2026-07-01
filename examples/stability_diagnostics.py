@@ -31,8 +31,8 @@ result = explain_stability(
 
 rank_stability = result["rank_stability"]
 print(f"\nRank stability (mean pairwise Kendall tau): {rank_stability:.3f}")
-print(f"  1.0 = perfectly stable rankings across seeds")
-print(f"  0.0 = rankings are random (increase n_samples or check value_fn)")
+print("  1.0 = perfectly stable rankings across seeds")
+print("  0.0 = rankings are random (increase n_samples or check value_fn)")
 print()
 
 print("Per-feature mean ± std ASV:")

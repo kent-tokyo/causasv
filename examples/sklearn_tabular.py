@@ -9,14 +9,13 @@ Requires: causasv + scikit-learn + numpy
 """
 
 try:
-    import numpy as np
-    from sklearn.ensemble import GradientBoostingClassifier
     from sklearn.datasets import make_classification
+    from sklearn.ensemble import GradientBoostingClassifier
 except ImportError:
     print("sklearn and numpy are required: pip install scikit-learn numpy")
     raise SystemExit(1)
 
-from causasv import CausalDAG, ASVExplainer
+from causasv import ASVExplainer, CausalDAG
 
 # --- Synthetic dataset ---
 X, y = make_classification(n_samples=500, n_features=3, n_informative=3,

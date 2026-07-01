@@ -16,8 +16,7 @@ Optional: pip install matplotlib  (for bar/waterfall charts)
 No external ML dependencies required — uses a synthetic additive value function.
 """
 
-from causasv import CausalDAG, ASVExplainer, explain_quality
-from causasv import plot
+from causasv import ASVExplainer, CausalDAG, explain_quality, plot
 
 # ── 1. Build the causal DAG ──────────────────────────────────────────────────
 # Chain: education → income → risk_score
