@@ -83,6 +83,106 @@ def explain_quality(
     return explainer.explain_quality(value_fn, **kwargs)
 
 
+def explain_safe(
+    explainer,
+    value_fn=None,
+    *,
+    value_fn_batch=None,
+    seed=None,
+    ci=0.95,
+    ess_ratio_min=0.1,
+    rank_stability_min=0.9,
+    stability_seeds=5,
+    **kwargs,
+):
+    """``explain_quality()`` plus automatic trust diagnostics.
+
+    Runs the same exact-first / quality-guaranteed-approximate pipeline as
+    ``explain_quality()``, then applies the checklist from the README
+    ("Approximation diagnostics checklist") automatically instead of leaving
+    it to the caller: flags low ESS ratio, low rank stability across seeds,
+    and features whose confidence interval still straddles zero.
+
+    Args:
+        explainer: ASVExplainer instance.
+        value_fn: ``(list[str]) -> float``. Mutually exclusive with value_fn_batch.
+        value_fn_batch: ``(list[list[str]]) -> list[float]``.
+        seed: RNG seed for reproducibility (also seeds the stability check).
+        ci: Confidence level for CI bounds, e.g. 0.95 for 95% CI.
+        ess_ratio_min: Warn if ess_ratio falls below this (default matches
+            the README checklist: 0.1).
+        rank_stability_min: Warn if rank_stability falls below this (default
+            matches the README checklist: 0.9).
+        stability_seeds: Number of seeds used for the rank-stability check.
+        **kwargs: Forwarded to ``explain_quality()`` / ``explain_stability()``.
+
+    Returns:
+        Everything ``explain_quality()`` returns, plus:
+        - ``"warnings"``: list[str] — human-readable diagnostic warnings, empty if none.
+        - ``"rank_stability"``: float | None — None when the result is exact,
+          or when only value_fn_batch was given (explain_stability is value_fn-only).
+        - ``"unstable_features"``: list[str] — features whose CI includes 0
+          (sign is not distinguishable from "no effect").
+
+    Note:
+        Rank-stability checking requires ``value_fn`` (not ``value_fn_batch``),
+        since ``explain_stability()`` re-runs the explainer per seed with a
+        single-coalition value function.
+    """
+    result = explain_quality(
+        explainer,
+        value_fn=value_fn,
+        value_fn_batch=value_fn_batch,
+        seed=seed,
+        ci=ci,
+        **kwargs,
+    )
+
+    warnings = []
+    rank_stability = None
+    if not result["is_exact"]:
+        ess_ratio = result.get("ess_ratio")
+        if ess_ratio is not None and ess_ratio < ess_ratio_min:
+            warnings.append(
+                f"ess_ratio {ess_ratio:.3f} is below {ess_ratio_min} — "
+                "estimate may have high variance; consider more samples."
+            )
+        if value_fn is not None:
+            # method="approx" (not explain()'s default "auto"): we already know the
+            # exact path fails for this DAG (is_exact is False above), so re-attempting
+            # it once per stability seed would just redundantly re-pay that cost.
+            # explain_quality()'s adaptive-style kwargs (min_samples/max_samples/etc.)
+            # aren't accepted by explain(), so they aren't forwarded here either.
+            base_seed = seed or 0
+            stability = explain_stability(
+                explainer,
+                value_fn,
+                seeds=list(range(base_seed, base_seed + stability_seeds)),
+                method="approx",
+            )
+            rank_stability = stability["rank_stability"]
+            if rank_stability < rank_stability_min:
+                warnings.append(
+                    f"rank_stability {rank_stability:.3f} is below {rank_stability_min} — "
+                    "feature rankings vary across seeds; consider more samples."
+                )
+
+    unstable_features = []
+    if "ci_low" in result:
+        unstable_features = [
+            f
+            for f in result["values"]
+            if result["ci_low"][f] <= 0.0 <= result["ci_high"][f]
+        ]
+
+    return {
+        **result,
+        "warnings": warnings,
+        "rank_stability": rank_stability,
+        "unstable_features": unstable_features,
+    }
+
+
 def _normal_quantile(p):
     """Approximate Φ⁻¹(p) without scipy — accurate to ~0.01 for p in (0.9, 0.999)."""
     import math
@@ -132,7 +232,8 @@ class ASVEnsembleExplainer:
             dict with keys:
             - ``"mean_values"``: dict[str, float] — mean ASV per feature
             - ``"std_values"``: dict[str, float] — std ASV per feature
-            - ``"rank_stability"``: float — mean Kendall tau across all DAG pairs (1 = full agreement)
+            - ``"rank_stability"``: float — mean Kendall tau across all DAG pairs
+              (1 = full agreement)
             - ``"per_dag_values"``: list[dict[str, float]] — one dict per DAG
         """
         per_dag = [e.explain(value_fn, **kwargs) for e in self._explainers]
@@ -236,20 +337,35 @@ def explain_stability(explainer, value_fn, seeds, **kwargs):
     }
 
 
-def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=None):
+def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=None, baseline="mean"):
     """Wrap a sklearn-compatible model as a causasv value function.
 
-    Absent features are replaced by their column mean from ``background``.
+    Absent features are replaced according to ``baseline``.
 
     Args:
         model: Any object with ``predict_proba(X)`` or ``predict(X)``.
         x: The instance to explain — array-like, shape (n_features,).
         background: Reference dataset — array-like, shape (n_samples, n_features).
-            Column means serve as the "absent feature" baseline.
+            Used to fill in absent features per ``baseline``.
         feature_names: Ordered list of feature names matching the columns of x/background.
         predict_fn: Optional callable ``(row: np.ndarray shape (1, n)) -> float``.
             Defaults to ``model.predict_proba(row)[0, 1]`` for classifiers or
             ``model.predict(row)[0]`` for regressors.
+        baseline: How to fill in absent features. One of:
+
+            - ``"mean"`` (default): column means of ``background``.
+            - ``"median"``: column medians of ``background``.
+            - ``"sample"``: a single row from ``background``, chosen once
+              (seeded, reproducible) rather than a synthetic averaged row —
+              useful when the mean row is unrealistic for correlated features.
+            - ``"background_expectation"``: true marginal expectation —
+              substitutes present features into *every* row of ``background``
+              and averages the model's prediction over all of them, instead of
+              a single summary row. More accurate for correlated features, at
+              the cost of ``len(background)`` model calls per coalition
+              instead of 1.
+            - a callable ``(background: np.ndarray) -> np.ndarray`` returning
+              a custom baseline row, e.g. a trimmed mean.
 
     Returns:
         A value function ``(coalition: list[str]) -> float`` suitable for
@@ -267,17 +383,43 @@ def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=Non
     import numpy as np  # lazy: only required when this function is called
 
     name_to_idx = {n: i for i, n in enumerate(feature_names)}
-    baseline = np.asarray(background, dtype=float).mean(axis=0)
+    background_arr = np.asarray(background, dtype=float)
     x = np.asarray(x, dtype=float)
 
     if predict_fn is None:
         if hasattr(model, "predict_proba"):
-            predict_fn = lambda r: float(model.predict_proba(r)[0, 1])
+
+            def predict_fn(r):
+                return float(model.predict_proba(r)[0, 1])
         else:
-            predict_fn = lambda r: float(model.predict(r)[0])
+
+            def predict_fn(r):
+                return float(model.predict(r)[0])
+
+    if baseline == "background_expectation":
+
+        def value_fn(coalition: list) -> float:
+            idxs = [name_to_idx[name] for name in coalition]
+            rows = background_arr.copy()
+            if idxs:
+                rows[:, idxs] = x[idxs]
+            return float(np.mean([predict_fn(row.reshape(1, -1)) for row in rows]))
+
+        return value_fn
+
+    if callable(baseline):
+        baseline_row = baseline(background_arr)
+    elif baseline == "mean":
+        baseline_row = background_arr.mean(axis=0)
+    elif baseline == "median":
+        baseline_row = np.median(background_arr, axis=0)
+    elif baseline == "sample":
+        baseline_row = background_arr[np.random.default_rng(0).integers(len(background_arr))]
+    else:
+        raise ValueError(f"Unknown baseline: {baseline!r}")
 
     def value_fn(coalition: list) -> float:
-        row = baseline.copy()
+        row = baseline_row.copy()
         for name in coalition:
             row[name_to_idx[name]] = x[name_to_idx[name]]
         return predict_fn(row.reshape(1, -1))
@@ -306,29 +448,41 @@ class TabularExplainer:
         values = explainer.explain_instance(X_test[0], method="auto")
     """
 
-    def __init__(self, explainer, model, background, feature_names, *, predict_fn=None):
+    def __init__(
+        self, explainer, model, background, feature_names, *, predict_fn=None, baseline="mean"
+    ):
         self._explainer = explainer
         self._model = model
         self._background = background
         self._feature_names = list(feature_names)
         self._predict_fn = predict_fn
+        self._baseline = baseline
 
     @classmethod
-    def from_model(cls, model, dag, background, feature_names, *, predict_fn=None):
+    def from_model(cls, model, dag, background, feature_names, *, predict_fn=None, baseline="mean"):
         """Construct from a sklearn-compatible model and a causal DAG.
 
         Args:
             model: Any object with ``predict_proba(X)`` or ``predict(X)``.
             dag: A ``CausalDAG`` instance.
-            background: Reference dataset used for absent-feature baseline
-                (column means). Array-like, shape (n_samples, n_features).
+            background: Reference dataset used for absent-feature baseline.
+                Array-like, shape (n_samples, n_features).
             feature_names: Ordered list of feature names.
             predict_fn: Optional callable ``(row: ndarray shape (1, n)) -> float``.
+            baseline: How to fill in absent features — see
+                ``make_tabular_value_fn`` for the available modes
+                (``"mean"``, ``"median"``, ``"sample"``,
+                ``"background_expectation"``, or a custom callable).
         """
         from .causasv import ASVExplainer
 
         return cls(
-            ASVExplainer(dag), model, background, feature_names, predict_fn=predict_fn
+            ASVExplainer(dag),
+            model,
+            background,
+            feature_names,
+            predict_fn=predict_fn,
+            baseline=baseline,
         )
 
     def explain_instance(self, x, method="auto", **kwargs):
@@ -348,6 +502,7 @@ class TabularExplainer:
             self._background,
             self._feature_names,
             predict_fn=self._predict_fn,
+            baseline=self._baseline,
         )
         return self._explainer.explain(value_fn, method=method, **kwargs)
 
@@ -359,6 +514,7 @@ class TabularExplainer:
             self._background,
             self._feature_names,
             predict_fn=self._predict_fn,
+            baseline=self._baseline,
         )
         return self._explainer.explain_with_diagnostics(
             value_fn, method=method, **kwargs
