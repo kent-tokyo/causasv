@@ -402,7 +402,10 @@ def test_explain_adaptive_ci_width():
     """Wider CI level → wider interval."""
     dag = CausalDAG.from_edges([("x", "y")])
     explainer = ASVExplainer(dag)
-    fn = lambda n: float(len(n))
+
+    def fn(n):
+        return float(len(n))
+
     info_90 = explainer.explain_adaptive(fn, min_samples=1_000, max_samples=5_000, seed=2, ci=0.90)
     info_99 = explainer.explain_adaptive(fn, min_samples=1_000, max_samples=5_000, seed=2, ci=0.99)
     for k in info_90["values"]:
@@ -415,7 +418,11 @@ def test_explain_adaptive_ci_no_ci():
     """Without ci=, ci_low/ci_high/ci are absent from the result."""
     dag = CausalDAG.from_edges([("a", "b")])
     explainer = ASVExplainer(dag)
-    info = explainer.explain_adaptive(lambda n: float(len(n)), min_samples=100, max_samples=500, seed=0)
+
+    def fn(n):
+        return float(len(n))
+
+    info = explainer.explain_adaptive(fn, min_samples=100, max_samples=500, seed=0)
     assert "ci_low" not in info
     assert "ci_high" not in info
     assert "ci" not in info
@@ -476,6 +483,27 @@ def test_tabular_explainer():
     assert abs(sum(values.values()) - (x.sum() - baseline_sum)) < 1e-6
 
 
+def test_tabular_explainer_forwards_baseline():
+    np = pytest.importorskip("numpy")
+    from causasv import TabularExplainer
+
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0], [3.0, 4.0]])
+    x = np.array([10.0, 20.0])
+    feature_names = ["f0", "f1"]
+    dag = CausalDAG.from_edges([("f0", "f1")])
+
+    explainer = TabularExplainer.from_model(
+        SumModel(), dag, background, feature_names, baseline="median"
+    )
+    values = explainer.explain_instance(x, method="exact")
+    median_sum = float(np.median(background, axis=0).sum())
+    assert abs(sum(values.values()) - (x.sum() - median_sum)) < 1e-6
+
+
 def test_make_tabular_value_fn():
     np = pytest.importorskip("numpy")
     from causasv import make_tabular_value_fn
@@ -497,6 +525,77 @@ def test_make_tabular_value_fn():
 
     # Full coalition → x.sum()
     assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
+
+
+def _tabular_test_fixture():
+    np = pytest.importorskip("numpy")
+
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0, 3.0], [3.0, 4.0, 5.0]])
+    x = np.array([10.0, 20.0, 30.0])
+    feature_names = ["f0", "f1", "f2"]
+    return np, SumModel(), background, x, feature_names
+
+
+def test_make_tabular_value_fn_median_baseline():
+    np, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    value_fn = make_tabular_value_fn(model, x, background, feature_names, baseline="median")
+    median_sum = np.median(background, axis=0).sum()
+    assert abs(value_fn([]) - median_sum) < 1e-9
+    assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
+
+
+def test_make_tabular_value_fn_sample_baseline():
+    _, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    value_fn = make_tabular_value_fn(model, x, background, feature_names, baseline="sample")
+    # Empty coalition must equal one of the two background rows' sums exactly
+    # (a real row, not a synthetic average); seeded so this is deterministic.
+    row_sums = {float(row.sum()) for row in background}
+    assert value_fn([]) in row_sums
+    assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
+
+
+def test_make_tabular_value_fn_background_expectation():
+    _, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    value_fn = make_tabular_value_fn(
+        model, x, background, feature_names, baseline="background_expectation"
+    )
+    # Empty coalition: mean of predict() over the untouched background rows.
+    assert abs(value_fn([]) - background.sum(axis=1).mean()) < 1e-9
+    # Full coalition: every background row is fully overwritten by x.
+    assert abs(value_fn(["f0", "f1", "f2"]) - x.sum()) < 1e-9
+    # Partial coalition: f0 comes from x in every row, f1/f2 stay from background.
+    row0 = x[0] + background[0, 1] + background[0, 2]
+    row1 = x[0] + background[1, 1] + background[1, 2]
+    expected = (row0 + row1) / 2
+    assert abs(value_fn(["f0"]) - expected) < 1e-9
+
+
+def test_make_tabular_value_fn_custom_imputer_baseline():
+    np, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    value_fn = make_tabular_value_fn(
+        model, x, background, feature_names, baseline=lambda bg: bg.max(axis=0)
+    )
+    assert abs(value_fn([]) - background.max(axis=0).sum()) < 1e-9
+
+
+def test_make_tabular_value_fn_unknown_baseline_raises():
+    _, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    with pytest.raises(ValueError):
+        make_tabular_value_fn(model, x, background, feature_names, baseline="bogus")
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +671,9 @@ def test_seeded_parallel_reproducible():
     """Same seed + parallel=True must give identical values across runs."""
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c"), ("a", "c")])
     explainer = ASVExplainer(dag)
-    fn = lambda names: float(len(names))
+
+    def fn(names):
+        return float(len(names))
 
     v1 = explainer.explain(fn, method="approx", n_samples=2000, seed=42, parallel=True)
     v2 = explainer.explain(fn, method="approx", n_samples=2000, seed=42, parallel=True)
@@ -583,7 +684,9 @@ def test_seeded_parallel_close_to_serial():
     """Seeded parallel and serial should agree within statistical tolerance."""
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     explainer = ASVExplainer(dag)
-    fn = lambda names: float(len(names))
+
+    def fn(names):
+        return float(len(names))
 
     serial = explainer.explain(fn, method="approx", n_samples=5000, seed=7, parallel=False)
     par = explainer.explain(fn, method="approx", n_samples=5000, seed=7, parallel=True)
@@ -623,7 +726,10 @@ def test_exact_dag_sparse_matches_exact_dag():
     """Sparse DP must produce the same values as dense DP."""
     dag = CausalDAG.from_edges([("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")])
     explainer = ASVExplainer(dag)
-    fn = lambda names: float(len(names))
+
+    def fn(names):
+        return float(len(names))
+
     dense = explainer.explain(fn, method="exact_dag")
     sparse = explainer.explain(fn, method="exact_dag_sparse")
     for k in dense:
@@ -647,7 +753,10 @@ def test_exact_dag_sparse_chain_large():
     edges = [(f"n{i}", f"n{i+1}") for i in range(24)]
     dag = CausalDAG.from_edges(edges)
     explainer = ASVExplainer(dag)
-    fn = lambda names: float(len(names))
+
+    def fn(names):
+        return float(len(names))
+
     result = explainer.explain(fn, method="exact_dag_sparse")
     # Chain has one ordering; all values should be 1.0
     for v in result.values():
