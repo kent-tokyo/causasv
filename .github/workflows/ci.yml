@@ -9,7 +9,10 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -36,13 +39,16 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Syntax check Python files
         run: |
           python -m py_compile \
@@ -52,9 +58,11 @@ jobs:
       - name: Build and test Python bindings
         run: |
           python -m venv .venv
-          .venv/bin/pip install maturin pytest
+          .venv/bin/pip install maturin pytest ruff
           cd py && ../.venv/bin/maturin develop --features python
           ../.venv/bin/python -m pytest tests/
+      - name: Lint Python files (ruff)
+        run: .venv/bin/ruff check py/ examples/
       - name: Smoke test Python public API
         run: |
           cd py
