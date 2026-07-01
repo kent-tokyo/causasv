@@ -7,6 +7,7 @@ use pyo3::types::PyDict;
 use crate::asv::{AsvExplainer, AsvResult};
 use crate::error::CausasvError;
 use crate::graph::{Dag as RustDag, NodeId};
+use crate::numerics::normal_quantile;
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
 
 #[pyclass(name = "CausalDAG")]
@@ -958,13 +959,6 @@ impl PyASVExplainer {
 ///
 /// Abramowitz & Stegun 26.2.17 — |error| < 4.5 × 10⁻⁴.
 /// Sufficient precision for CI display (ci=0.95 → z=1.9600, exact=1.95996).
-fn normal_quantile(p: f64) -> f64 {
-    let t = (-2.0 * (1.0 - p).ln()).sqrt();
-    let c = [2.515_517, 0.802_853, 0.010_328];
-    let d = [1.432_788, 0.189_269, 0.001_308];
-    t - (c[0] + c[1] * t + c[2] * t * t) / (1.0 + d[0] * t + d[1] * t * t + d[2] * t * t * t)
-}
-
 #[pymodule]
 fn causasv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCausalDAG>()?;
