@@ -201,6 +201,23 @@ print(result["std_values"])       # dict[str, float] — small means stable esti
 print(result["mean_values"])      # dict[str, float] — mean ASV across seeds
 ```
 
+Use `explain_safe()` to apply the diagnostics checklist above automatically instead of
+checking `ess_ratio`/`rank_stability`/CI bounds by hand:
+
+```python
+from causasv import explain_safe
+
+info = explain_safe(
+    explainer,
+    value_fn=lambda feature_names: my_model_score(feature_names),
+    ci=0.95,
+    seed=42,
+)
+print(info["warnings"])           # list[str] — e.g. low ess_ratio or low rank_stability
+print(info["rank_stability"])     # float | None — None when the result is already exact
+print(info["unstable_features"])  # list[str] — features whose CI still straddles 0
+```
+
 Use `ASVEnsembleExplainer` to measure sensitivity across multiple candidate DAGs:
 
 ```python
@@ -248,12 +265,20 @@ dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
 explainer = TabularExplainer.from_model(
     model=my_classifier,      # any sklearn-compatible model
     dag=dag,
-    background=X_train,       # reference dataset; column means = absent-feature baseline
+    background=X_train,       # reference dataset; absent features filled per `baseline`
     feature_names=["education", "income", "risk_score"],
+    baseline="mean",          # "mean" | "median" | "sample" | "background_expectation" | callable
 )
 values = explainer.explain_instance(X_test[0], method="auto")
 # values: dict[str, float] mapping feature name → ASV value
 ```
+
+`baseline` controls how absent features are filled in: `"mean"`/`"median"` use a single
+summary row; `"sample"` uses one real (seeded, reproducible) background row instead of a
+synthetic average; `"background_expectation"` averages the model's prediction over every
+background row (true marginal expectation — more accurate for correlated features, at the
+cost of `len(background)` model calls per coalition); or pass a callable
+`(background: np.ndarray) -> np.ndarray` for a custom baseline row.
 
 Or build the value function directly with `make_tabular_value_fn` for full control:
 
@@ -261,11 +286,12 @@ Or build the value function directly with `make_tabular_value_fn` for full contr
 from causasv import make_tabular_value_fn
 
 value_fn = make_tabular_value_fn(model=my_classifier, x=X_test[0],
-                                  background=X_train, feature_names=[...])
+                                  background=X_train, feature_names=[...],
+                                  baseline="mean")
 values = ASVExplainer(dag).explain(value_fn, method="auto")
 ```
 
-## Exact vs Approximate
+## Exact vs Approximate (advanced — manual method control)
 
 | Method | When to use | API |
 |--------|-------------|-----|

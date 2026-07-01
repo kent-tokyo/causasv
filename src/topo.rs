@@ -1,3 +1,7 @@
+//! Topological ordering of DAGs: a single deterministic order (`topo_sort`)
+//! and exhaustive enumeration of all valid orders (`enumerate_topos`), the
+//! latter used by the brute-force `exact` method for small DAGs.
+
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
