@@ -1,6 +1,13 @@
+//! The causal DAG data structure (`Dag`) and its node handle (`NodeId`).
+//! Every other module (topological ordering, exact DP, sampling) operates on
+//! the adjacency lists exposed here.
+
 use crate::error::CausasvError;
 use indexmap::IndexMap;
 
+/// Stable handle to a node in a `Dag`, assigned in insertion order starting at 0.
+/// Valid only for the `Dag` that created it — passing a `NodeId` from a
+/// different (or stale) `Dag` returns `CausasvError::InvalidNodeId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u32);
 
@@ -21,6 +28,7 @@ pub struct Dag {
 }
 
 impl Dag {
+    /// Create an empty DAG. Nodes and edges are added via `add_node`/`add_edge`.
     pub fn new() -> Self {
         Self {
             name_to_id: IndexMap::new(),
@@ -86,32 +94,41 @@ impl Dag {
         Ok(())
     }
 
+    /// Number of nodes in the DAG.
     pub fn node_count(&self) -> usize {
         self.names.len()
     }
 
+    /// Total number of edges, used by `auto`'s sparse-vs-dense heuristic (`m ≤ 2n`).
     pub(crate) fn edge_count(&self) -> usize {
         self.children.iter().map(|c| c.len()).sum()
     }
 
+    /// Look up a node's name by id, or `None` if the id is out of range.
     pub fn node_name(&self, id: NodeId) -> Option<&str> {
         self.names.get(id.0 as usize).map(String::as_str)
     }
 
+    /// Look up a node's id by name, or `None` if no such node exists.
     pub fn node_id(&self, name: &str) -> Option<NodeId> {
         self.name_to_id.get(name).copied()
     }
 
+    /// Direct children of `id` (nodes `id` has an edge to), or
+    /// `CausasvError::InvalidNodeId` if `id` doesn't exist in this DAG.
     pub fn children(&self, id: NodeId) -> Result<&[NodeId], CausasvError> {
         self.check_id(id)?;
         Ok(&self.children[id.0 as usize])
     }
 
+    /// Direct parents of `id` (nodes with an edge to `id`), or
+    /// `CausasvError::InvalidNodeId` if `id` doesn't exist in this DAG.
     pub fn parents(&self, id: NodeId) -> Result<&[NodeId], CausasvError> {
         self.check_id(id)?;
         Ok(&self.parents[id.0 as usize])
     }
 
+    /// Iterate over every node id in insertion order.
     pub fn all_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         (0..self.names.len()).map(|i| NodeId(i as u32))
     }
