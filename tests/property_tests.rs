@@ -233,3 +233,35 @@ proptest! {
             "efficiency axiom violated for approx: expected {n}, got {total}");
     }
 }
+
+// ── Approximate per-node accuracy ─────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    /// Approximate per-node values must be individually close to exact_dag, not
+    /// just correct in aggregate. `v(S)=|S|` (used by prop_efficiency_approx above)
+    /// has a structure-independent exact answer (1.0/node) that the efficiency
+    /// axiom alone guarantees even if individual estimates are off (errors could
+    /// cancel in the sum). `v(S)=|S|^2` doesn't have that shortcut — the exact
+    /// per-node ASV genuinely depends on DAG structure, so this checks accuracy
+    /// the aggregate-only check can't.
+    #[test]
+    fn prop_approx_matches_exact_dag_per_node(dag in arb_dag(7)) {
+        let value_fn = |c: &[NodeId]| Ok((c.len() as f64).powi(2));
+        let explainer = AsvExplainer::new(dag);
+        let exact = explainer.exact_dag(value_fn).unwrap();
+        let approx = explainer
+            .approximate(value_fn, SamplingConfig::new(10_000).with_seed(7))
+            .unwrap();
+        for (&node, &phi_e) in &exact.values {
+            let phi_a = approx.values[&node];
+            // Tolerance scales with the true value's magnitude (v(S)=|S|^2 grows
+            // with n) plus a floor so near-zero true values aren't over-strict.
+            let tol = (phi_e.abs() * 0.2).max(0.5);
+            prop_assert!(
+                (phi_a - phi_e).abs() < tol,
+                "approx vs exact_dag per-node error too large: node={node:?} exact={phi_e:.4} approx={phi_a:.4} tol={tol:.4}"
+            );
+        }
+    }
+}

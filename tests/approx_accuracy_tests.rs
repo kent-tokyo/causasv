@@ -3,7 +3,7 @@
 /// For additive v(S) = |S|, the exact ASV is 1.0 per node on any DAG (marginal contribution
 /// is always 1 regardless of prefix). Tests verify approximate matches this across DAG shapes
 /// with different IS-weight distributions (chain vs wide tree vs diamond).
-use causasv::{AsvExplainer, Dag, NodeId, SamplingConfig};
+use causasv::{AdaptiveSamplingConfig, AsvExplainer, Dag, NodeId, SamplingConfig};
 
 fn additive(s: &[NodeId]) -> Result<f64, causasv::CausasvError> {
     Ok(s.len() as f64)
@@ -185,4 +185,47 @@ fn test_weighted_approx_vs_exact_diamond() {
 #[test]
 fn test_weighted_approx_vs_exact_balanced_tree7() {
     check_approx_vs_exact(make_balanced_tree(2), weighted, 4_000, 0.20);
+}
+
+// ── confidence interval coverage (mirrors py/tests/test_ci_coverage.py) ──────
+
+/// z-score for a 95% two-sided normal CI (avoids a stats crate dependency for one constant).
+const Z_95: f64 = 1.959963984540054;
+
+/// For additive v(S)=|S|, the true ASV is exactly 1.0 per node on any DAG. Runs
+/// approximate_adaptive across many seeds and checks that a 95% CI built from its
+/// stderr (value ± Z_95 * stderr) covers 1.0 at close to the nominal rate. The
+/// 0.75 floor (not 0.95) mirrors the Python-side quick coverage test's threshold:
+/// generous enough to avoid flakiness while still catching a badly miscalibrated
+/// stderr (e.g. an off-by-constant-factor bug would fail this easily).
+#[test]
+fn test_adaptive_ci_coverage_additive() {
+    let n_seeds = 30;
+    let mut covered = 0;
+    for seed in 0..n_seeds {
+        let explainer = AsvExplainer::new(make_collider(10));
+        let config = AdaptiveSamplingConfig {
+            min_samples: 200,
+            max_samples: 2_000,
+            seed: Some(seed as u64),
+            ..AdaptiveSamplingConfig::default()
+        };
+        let result = explainer.approximate_adaptive(additive, config).unwrap();
+        let stderr = result
+            .stderr
+            .as_ref()
+            .expect("adaptive result must have stderr");
+        let all_covered = result.values.iter().all(|(node, &v)| {
+            let se = stderr[node];
+            (v - Z_95 * se) <= 1.0 && 1.0 <= (v + Z_95 * se)
+        });
+        if all_covered {
+            covered += 1;
+        }
+    }
+    let rate = covered as f64 / n_seeds as f64;
+    assert!(
+        rate >= 0.75,
+        "CI coverage {rate:.2} below 0.75 threshold ({covered}/{n_seeds} seeds fully covered)"
+    );
 }
