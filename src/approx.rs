@@ -77,17 +77,20 @@ where
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
+            // `without` at step t is always `with_node` from step t-1 — carry the
+            // value forward instead of re-looking it up (halves cache lookups/sample).
+            let mut prev_value = value_cached(&mut cache, &value_fn, prefix_mask)?;
             for &node in &scratch.ordering {
-                let without = prefix_mask;
                 let with_node = prefix_mask | (1u64 << node.0);
-                let delta = value_cached(&mut cache, &value_fn, with_node)?
-                    - value_cached(&mut cache, &value_fn, without)?;
+                let with_value = value_cached(&mut cache, &value_fn, with_node)?;
+                let delta = with_value - prev_value;
                 kahan_add(
                     &mut numerator[node.0 as usize],
                     &mut num_comp[node.0 as usize],
                     w * delta,
                 );
                 prefix_mask = with_node;
+                prev_value = with_value;
             }
         }
         (numerator, denominator, sum_w_sq)
@@ -127,17 +130,18 @@ where
                         kahan_add(&mut denom, &mut denom_c, w);
                         kahan_add(&mut wsq, &mut wsq_c, w * w);
                         let mut prefix_mask: u64 = 0;
+                        let mut prev_value = value_cached(&mut cache, &value_fn, prefix_mask)?;
                         for &node in &scratch.ordering {
-                            let without = prefix_mask;
                             let with_node = prefix_mask | (1u64 << node.0);
-                            let delta = value_cached(&mut cache, &value_fn, with_node)?
-                                - value_cached(&mut cache, &value_fn, without)?;
+                            let with_value = value_cached(&mut cache, &value_fn, with_node)?;
+                            let delta = with_value - prev_value;
                             kahan_add(
                                 &mut local_num[node.0 as usize],
                                 &mut num_c[node.0 as usize],
                                 w * delta,
                             );
                             prefix_mask = with_node;
+                            prev_value = with_value;
                         }
                     }
                     Ok((local_num, denom, wsq))
@@ -183,13 +187,13 @@ where
                 *acc_denom += w;
                 *acc_wsq += w * w;
                 let mut prefix_mask: u64 = 0;
+                let mut prev_value = value_cached(cache, &value_fn, prefix_mask)?;
                 for &node in &scratch.ordering {
-                    let without = prefix_mask;
                     let with_node = prefix_mask | (1u64 << node.0);
-                    acc_num[node.0 as usize] += w
-                        * (value_cached(cache, &value_fn, with_node)?
-                            - value_cached(cache, &value_fn, without)?);
+                    let with_value = value_cached(cache, &value_fn, with_node)?;
+                    acc_num[node.0 as usize] += w * (with_value - prev_value);
                     prefix_mask = with_node;
+                    prev_value = with_value;
                 }
                 Ok(state)
             })
@@ -333,12 +337,13 @@ where
             denominator += w;
             sum_w_sq += w * w;
             let mut prefix_mask: u64 = 0;
+            let mut prev_value = *cache.get(&prefix_mask).unwrap();
             for &node in &s.ordering {
-                let without = *cache.get(&prefix_mask).unwrap();
                 let with_node = prefix_mask | (1u64 << node.0);
-                let with = *cache.get(&with_node).unwrap();
-                numerator[node.0 as usize] += w * (with - without);
+                let with_value = *cache.get(&with_node).unwrap();
+                numerator[node.0 as usize] += w * (with_value - prev_value);
                 prefix_mask = with_node;
+                prev_value = with_value;
             }
         }
 
@@ -455,11 +460,11 @@ where
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
+            let mut prev_value = value_cached(&mut cache, &value_fn, prefix_mask)?;
             for &node in &sample.ordering {
-                let without = prefix_mask;
                 let with_node = prefix_mask | (1u64 << node.0);
-                let delta = value_cached(&mut cache, &value_fn, with_node)?
-                    - value_cached(&mut cache, &value_fn, without)?;
+                let with_value = value_cached(&mut cache, &value_fn, with_node)?;
+                let delta = with_value - prev_value;
                 let wd = w * delta;
                 kahan_add(
                     &mut numerator[node.0 as usize],
@@ -472,6 +477,7 @@ where
                     wd * wd,
                 );
                 prefix_mask = with_node;
+                prev_value = with_value;
             }
         }
         total_samples += batch;
@@ -658,11 +664,11 @@ where
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
             let mut prefix_mask: u64 = 0;
+            let mut prev_value = *cache.get(&prefix_mask).unwrap();
             for &node in &s.ordering {
-                let without = *cache.get(&prefix_mask).unwrap();
                 let with_node = prefix_mask | (1u64 << node.0);
-                let with = *cache.get(&with_node).unwrap();
-                let delta = with - without;
+                let with_value = *cache.get(&with_node).unwrap();
+                let delta = with_value - prev_value;
                 let wd = w * delta;
                 kahan_add(
                     &mut numerator[node.0 as usize],
@@ -675,6 +681,7 @@ where
                     wd * wd,
                 );
                 prefix_mask = with_node;
+                prev_value = with_value;
             }
         }
 
@@ -770,17 +777,17 @@ where
     for _ in 0..config.n_samples {
         sample_uniform_into(&mut rng, dp_ind, parents_mask, &mut ordering);
         let mut prefix_mask: u64 = 0;
+        let mut prev_value = value_cached(&mut cache, &value_fn, prefix_mask)?;
         for &node in &ordering {
-            let without = prefix_mask;
             let with_node = prefix_mask | (1u64 << node.0);
-            let delta = value_cached(&mut cache, &value_fn, with_node)?
-                - value_cached(&mut cache, &value_fn, without)?;
+            let with_value = value_cached(&mut cache, &value_fn, with_node)?;
             kahan_add(
                 &mut numerator[node.0 as usize],
                 &mut num_comp[node.0 as usize],
-                delta,
+                with_value - prev_value,
             );
             prefix_mask = with_node;
+            prev_value = with_value;
         }
     }
 
@@ -843,17 +850,17 @@ where
             )));
         }
         let mut prefix_mask: u64 = 0;
+        let mut prev_value = value_cached(&mut value_cache, &value_fn, prefix_mask)?;
         for &node in &ordering {
-            let without = prefix_mask;
             let with_node = prefix_mask | (1u64 << node.0);
-            let delta = value_cached(&mut value_cache, &value_fn, with_node)?
-                - value_cached(&mut value_cache, &value_fn, without)?;
+            let with_value = value_cached(&mut value_cache, &value_fn, with_node)?;
             kahan_add(
                 &mut numerator[node.0 as usize],
                 &mut num_comp[node.0 as usize],
-                delta,
+                with_value - prev_value,
             );
             prefix_mask = with_node;
+            prev_value = with_value;
         }
     }
 
@@ -938,11 +945,11 @@ where
                 )));
             }
             let mut prefix_mask: u64 = 0;
+            let mut prev_value = value_cached(&mut value_cache, &value_fn, prefix_mask)?;
             for &node in &ordering {
-                let without = prefix_mask;
                 let with_node = prefix_mask | (1u64 << node.0);
-                let delta = value_cached(&mut value_cache, &value_fn, with_node)?
-                    - value_cached(&mut value_cache, &value_fn, without)?;
+                let with_value = value_cached(&mut value_cache, &value_fn, with_node)?;
+                let delta = with_value - prev_value;
                 kahan_add(
                     &mut numerator[node.0 as usize],
                     &mut num_comp[node.0 as usize],
@@ -954,6 +961,7 @@ where
                     delta * delta,
                 );
                 prefix_mask = with_node;
+                prev_value = with_value;
             }
         }
         total_samples += batch;
@@ -1112,11 +1120,11 @@ where
         // Compute marginals from the fully populated cache.
         for order in &orderings {
             let mut prefix_mask: u64 = 0;
+            let mut prev_value = *value_cache.get(&prefix_mask).unwrap();
             for &node in order {
-                let without = *value_cache.get(&prefix_mask).unwrap();
                 let with_node_mask = prefix_mask | (1u64 << node.0);
-                let with = *value_cache.get(&with_node_mask).unwrap();
-                let delta = with - without;
+                let with_value = *value_cache.get(&with_node_mask).unwrap();
+                let delta = with_value - prev_value;
                 kahan_add(
                     &mut numerator[node.0 as usize],
                     &mut num_comp[node.0 as usize],
@@ -1128,6 +1136,7 @@ where
                     delta * delta,
                 );
                 prefix_mask = with_node_mask;
+                prev_value = with_value;
             }
         }
         total_samples += batch;
