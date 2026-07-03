@@ -336,3 +336,35 @@ fn test_auto_20_28_range_stays_exact_above_250k_order_ideals() {
         "efficiency axiom: expected 21.0, got {total}"
     );
 }
+
+#[test]
+fn test_auto_n_le_20_dense_order_ideals_skips_sparse() {
+    // A 12-node antichain (no edges, n≤20): order ideals = 2^12 = 4096, the worst
+    // case for sparse DP (every subset is a valid order ideal, same as dense's own
+    // state count) — sparse's per-state HashMap overhead makes it strictly worse
+    // than dense here. The old m<=2n edge-count heuristic (m=0 <= 24) would have
+    // picked exact_dag_sparse anyway, since edge count is a poor order-ideal proxy.
+    // Guards against a regression back to that heuristic.
+    let mut dag = Dag::new();
+    for i in 0..12 {
+        dag.add_node(&format!("a{i}"));
+    }
+    assert_eq!(dag.node_count(), 12);
+
+    let explainer = AsvExplainer::new(dag);
+    let result = explainer
+        .auto(
+            |c| Ok(c.len() as f64),
+            SamplingConfig::new(500).with_seed(0),
+        )
+        .unwrap();
+
+    assert!(result.is_exact);
+    assert_eq!(result.method_used, Some("exact_dag"));
+
+    let total: f64 = result.values.values().sum();
+    assert!(
+        (total - 12.0).abs() < 1e-9,
+        "efficiency axiom: expected 12.0, got {total}"
+    );
+}

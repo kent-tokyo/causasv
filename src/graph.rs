@@ -99,11 +99,6 @@ impl Dag {
         self.names.len()
     }
 
-    /// Total number of edges, used by `auto`'s sparse-vs-dense heuristic (`m ≤ 2n`).
-    pub(crate) fn edge_count(&self) -> usize {
-        self.children.iter().map(|c| c.len()).sum()
-    }
-
     /// Look up a node's name by id, or `None` if the id is out of range.
     pub fn node_name(&self, id: NodeId) -> Option<&str> {
         self.names.get(id.0 as usize).map(String::as_str)
