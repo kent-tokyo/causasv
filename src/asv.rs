@@ -310,7 +310,8 @@ impl AsvExplainer {
     /// Dispatch rules:
     /// - n ≤ 8: `exact` — brute-force, lowest overhead for small n
     /// - n > 8, rooted directed tree: `exact_tree` — order-ideal DP
-    /// - 8 < n ≤ 20: `exact_dag_sparse` if edge_count ≤ 2n (sparse heuristic), else `exact_dag`
+    /// - 8 < n ≤ 20: sparse preflight against the memory-guard's own state budget
+    ///   → `exact_dag_sparse`, else `exact_dag`
     /// - 20 < n ≤ 28: sparse preflight against the memory-guard's own state budget
     ///   (~2 GiB / 80 bytes) → `exact_dag_sparse`; preflight failure or overflow error
     ///   falls back to `approximate`
@@ -334,27 +335,33 @@ impl AsvExplainer {
             r.method_used = Some("exact_tree");
             Ok(r)
         } else if n <= 20 {
-            let m = self.dag.edge_count();
-            if m <= 2 * n {
-                // Sparse DAG: try sparse DP first; fall back to dense on the rare Overflow edge case.
-                // Use a closure to borrow value_fn without consuming it (same pattern as n<=28 branch).
-                match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default())
-                {
-                    Ok(mut r) => {
-                        r.method_used = Some("exact_dag_sparse");
-                        Ok(r)
-                    }
-                    Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
-                        let mut r = self.exact_dag(value_fn)?;
-                        r.method_used = Some("exact_dag");
-                        Ok(r)
-                    }
-                    Err(e) => Err(e),
-                }
-            } else {
+            let sparse_cfg = ExactDagConfig::default();
+            // Order-ideal preflight, replacing the old m<=2n edge-count heuristic: edge
+            // count is a poor order-ideal proxy (a disconnected graph has m=0 but 2^n
+            // order ideals, the worst case — sparse's per-state HashMap overhead makes
+            // it strictly worse than dense there). Unlike the n>20 branches, dense is
+            // always cheap here (n≤20 → ≤8MB), so the question isn't feasibility but
+            // whether sparse is *worth* trying: budget it at half the dense state count
+            // (2^(n-1)) so a doomed BFS aborts early instead of running to completion
+            // before we fall back to dense anyway.
+            if !estimate_sparse_feasible(&self.dag, &self.parents_mask, 1usize << (n - 1)) {
                 let mut r = self.exact_dag(value_fn)?;
                 r.method_used = Some("exact_dag");
-                Ok(r)
+                return Ok(r);
+            }
+            // Sparse DAG: try sparse DP first; fall back to dense on the rare Overflow edge case.
+            // Use a closure to borrow value_fn without consuming it (same pattern as n<=28 branch).
+            match self.exact_dag_sparse_with_config(|c| value_fn(c), &sparse_cfg) {
+                Ok(mut r) => {
+                    r.method_used = Some("exact_dag_sparse");
+                    Ok(r)
+                }
+                Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
+                    let mut r = self.exact_dag(value_fn)?;
+                    r.method_used = Some("exact_dag");
+                    Ok(r)
+                }
+                Err(e) => Err(e),
             }
         } else if n <= 28 {
             let sparse_cfg = ExactDagConfig::default();
@@ -440,7 +447,8 @@ impl AsvExplainer {
     /// Dispatch rules:
     /// - n ≤ 8: `exact`
     /// - rooted tree: `exact_tree`
-    /// - 8 < n ≤ 20: `exact_dag_sparse` (sparse-first) or `exact_dag`
+    /// - 8 < n ≤ 20: sparse preflight against the memory-guard's own state budget
+    ///   → `exact_dag_sparse`, else `exact_dag`
     /// - 20 < n ≤ 63: sparse preflight (≤ 250k order ideals) → `exact_dag_sparse`;
     ///   preflight fails or BFS overflows → `approximate_uniform_sparse_adaptive`
     /// - n > 63: `approximate_adaptive`
@@ -463,25 +471,25 @@ impl AsvExplainer {
             r.method_used = Some("exact_tree");
             Ok(r)
         } else if n <= 20 {
-            let m = self.dag.edge_count();
-            if m <= 2 * n {
-                match self.exact_dag_sparse_with_config(|c| value_fn(c), &ExactDagConfig::default())
-                {
-                    Ok(mut r) => {
-                        r.method_used = Some("exact_dag_sparse");
-                        Ok(r)
-                    }
-                    Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
-                        let mut r = self.exact_dag(value_fn)?;
-                        r.method_used = Some("exact_dag");
-                        Ok(r)
-                    }
-                    Err(e) => Err(e),
-                }
-            } else {
+            let sparse_cfg = ExactDagConfig::default();
+            // See auto()'s n<=20 branch: order-ideal preflight (budgeted at half the
+            // dense state count) replaces the old m<=2n edge-count heuristic.
+            if !estimate_sparse_feasible(&self.dag, &self.parents_mask, 1usize << (n - 1)) {
                 let mut r = self.exact_dag(value_fn)?;
                 r.method_used = Some("exact_dag");
-                Ok(r)
+                return Ok(r);
+            }
+            match self.exact_dag_sparse_with_config(|c| value_fn(c), &sparse_cfg) {
+                Ok(mut r) => {
+                    r.method_used = Some("exact_dag_sparse");
+                    Ok(r)
+                }
+                Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {
+                    let mut r = self.exact_dag(value_fn)?;
+                    r.method_used = Some("exact_dag");
+                    Ok(r)
+                }
+                Err(e) => Err(e),
             }
         } else if n <= 63 {
             // Borrow value_fn so the closure can be used in multiple fallback arms.
