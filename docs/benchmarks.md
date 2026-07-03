@@ -92,6 +92,39 @@ Same seed + same num_threads → bitwise-identical results across runs.
 (defaults: rel_tol=0.01, ess_ratio_min=0.10). For an additive value function on a chain,
 convergence is fast and the adaptive method uses far fewer samples.
 
+### Prefix-mask cache lookup dedup (2026-07-03)
+
+Every sampling loop looked up both `without` (the coalition before adding the current
+node) and `with_node` (after) on each step of a sampled linear extension — but `without`
+at step *t* is always the same mask as `with_node` at step *t-1*, already computed and
+cached one step earlier. Carrying that value forward in a local variable instead of
+re-querying the cache cuts lookups from 2n to n+1 per sample, across all IS/uniform
+sampling variants (serial, parallel, batched, adaptive).
+
+| Benchmark | Change (median) |
+|-----------|-----------------|
+| `approx_chain_10_1k` | −30.8% |
+| `approx_balanced_tree_15_1k` | −28.0% |
+| `approx_vs_batched_chain_10_1k/normal` | −30.8% |
+| `approx_vs_batched_chain_10_1k/batched_b256` | −22.3% |
+| `approx_chain_20_10k_parallel/serial_seeded` | −31.5% |
+| `approx_chain_20_10k_parallel/parallel_2t` | −26.4% |
+| `approx_chain_20_10k_parallel/parallel_4t` | −25.9% |
+| `approx_diamond_10_10k_seeded` | −28.9% |
+| `approx_balanced_tree_15_10k_seeded` | −31.1% |
+| `approx_chain_20_10k_seeded` | −34.6% |
+| `approx_balanced_tree_31_10k_seeded` | −17.2% |
+| `approx_vs_adaptive_chain_10/fixed_10k` | −35.9% |
+| `approx_vs_adaptive_chain_10/adaptive_max10k` | −27.9% |
+| `approx_vs_uniform_diamond_10_1k/frontier_IS_1k` | −26.7% |
+| `approx_vs_uniform_diamond_10_1k/uniform_1k` | −27.8% |
+
+All changes are statistically significant (p < 0.05, Criterion `--baseline` comparison,
+100 samples each). **Caveat**: these use the cheap in-repo value function `v(S) = |S|`,
+so the measured win is essentially pure HashMap-lookup overhead — it's the upper bound.
+When the caller's `value_fn` is expensive (e.g. a Python model callback), that cost
+dominates and this fix contributes proportionally less to wall-clock time.
+
 ---
 
 ## Notes
