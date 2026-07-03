@@ -23,6 +23,15 @@ jobs:
       - run: cargo test
       - run: cargo package --no-verify
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-llvm-cov --locked
+      - run: cargo llvm-cov --all-features --summary-only
+
   version-sync:
     runs-on: ubuntu-latest
     steps:
@@ -58,9 +67,9 @@ jobs:
       - name: Build and test Python bindings
         run: |
           python -m venv .venv
-          .venv/bin/pip install maturin pytest ruff
+          .venv/bin/pip install maturin pytest pytest-cov ruff
           cd py && ../.venv/bin/maturin develop --features python
-          ../.venv/bin/python -m pytest tests/
+          ../.venv/bin/python -m pytest --cov=causasv --cov-report=term-missing tests/
       - name: Lint Python files (ruff)
         run: .venv/bin/ruff check py/ examples/
       - name: Smoke test Python public API
