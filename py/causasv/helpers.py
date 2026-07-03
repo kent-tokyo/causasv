@@ -337,7 +337,9 @@ def explain_stability(explainer, value_fn, seeds, **kwargs):
     }
 
 
-def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=None, baseline="mean"):
+def make_tabular_value_fn(
+    model, x, background, feature_names, *, predict_fn=None, predict_fn_batch=None, baseline="mean"
+):
     """Wrap a sklearn-compatible model as a causasv value function.
 
     Absent features are replaced according to ``baseline``.
@@ -351,6 +353,14 @@ def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=Non
         predict_fn: Optional callable ``(row: np.ndarray shape (1, n)) -> float``.
             Defaults to ``model.predict_proba(row)[0, 1]`` for classifiers or
             ``model.predict(row)[0]`` for regressors.
+        predict_fn_batch: Optional callable ``(rows: np.ndarray shape (m, n)) ->
+            array-like[float]``, used only by ``baseline="background_expectation"`` to
+            score all ``len(background)`` rows in one vectorized call instead of one
+            Python call per row. Defaults to
+            ``model.predict_proba(rows)[:, 1]`` / ``model.predict(rows)`` — but only when
+            ``predict_fn`` was left at its default; a custom ``predict_fn`` without a matching
+            ``predict_fn_batch`` falls back to the per-row loop, since its logic can't be
+            assumed to vectorize safely.
         baseline: How to fill in absent features. One of:
 
             - ``"mean"`` (default): column means of ``background``.
@@ -386,6 +396,7 @@ def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=Non
     background_arr = np.asarray(background, dtype=float)
     x = np.asarray(x, dtype=float)
 
+    custom_predict_fn = predict_fn is not None
     if predict_fn is None:
         if hasattr(model, "predict_proba"):
 
@@ -397,12 +408,23 @@ def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=Non
                 return float(model.predict(r)[0])
 
     if baseline == "background_expectation":
+        if predict_fn_batch is None and not custom_predict_fn:
+            if hasattr(model, "predict_proba"):
+
+                def predict_fn_batch(rows):
+                    return model.predict_proba(rows)[:, 1]
+            else:
+
+                def predict_fn_batch(rows):
+                    return model.predict(rows)
 
         def value_fn(coalition: list) -> float:
             idxs = [name_to_idx[name] for name in coalition]
             rows = background_arr.copy()
             if idxs:
                 rows[:, idxs] = x[idxs]
+            if predict_fn_batch is not None:
+                return float(np.mean(predict_fn_batch(rows)))
             return float(np.mean([predict_fn(row.reshape(1, -1)) for row in rows]))
 
         return value_fn
@@ -425,6 +447,55 @@ def make_tabular_value_fn(model, x, background, feature_names, *, predict_fn=Non
         return predict_fn(row.reshape(1, -1))
 
     return value_fn
+
+
+def _tabular_value_fn_batch(model, x, background, feature_names, *, predict_fn_batch=None):
+    """``value_fn_batch``-compatible version of the ``background_expectation`` baseline.
+
+    Stacks every coalition's background matrix into one array and scores it with a
+    single ``predict_fn_batch`` call, instead of one call per coalition — for use with
+    ``ASVExplainer.explain_quality_batch``/``explain_adaptive_batch``, which already
+    reduce GIL round-trips from O(n_samples) to O(n_samples / batch_size); this collapses
+    the remaining ``len(background)``-calls-per-coalition cost the same way.
+
+    Only ``baseline="background_expectation"`` is supported — it's the only mode whose
+    per-coalition cost scales with ``len(background)`` and is worth batching this way.
+    """
+    import numpy as np
+
+    name_to_idx = {n: i for i, n in enumerate(feature_names)}
+    background_arr = np.asarray(background, dtype=float)
+    x = np.asarray(x, dtype=float)
+
+    if predict_fn_batch is None:
+        if hasattr(model, "predict_proba"):
+
+            def predict_fn_batch(rows):
+                return model.predict_proba(rows)[:, 1]
+        else:
+
+            def predict_fn_batch(rows):
+                return model.predict(rows)
+
+    def value_fn_batch(coalitions: list) -> list:
+        per_coalition_rows = []
+        counts = []
+        for coalition in coalitions:
+            idxs = [name_to_idx[name] for name in coalition]
+            rows = background_arr.copy()
+            if idxs:
+                rows[:, idxs] = x[idxs]
+            per_coalition_rows.append(rows)
+            counts.append(len(rows))
+        preds = np.asarray(predict_fn_batch(np.concatenate(per_coalition_rows, axis=0)))
+        results = []
+        offset = 0
+        for count in counts:
+            results.append(float(preds[offset : offset + count].mean()))
+            offset += count
+        return results
+
+    return value_fn_batch
 
 
 class TabularExplainer:
@@ -519,3 +590,32 @@ class TabularExplainer:
         return self._explainer.explain_with_diagnostics(
             value_fn, method=method, **kwargs
         )
+
+    def explain_instance_quality_batch(self, x, **kwargs):
+        """Like ``explain_instance`` but batches coalitions for fewer GIL round-trips.
+
+        Only supported for ``baseline="background_expectation"``: every coalition's
+        ``len(background)`` model calls are stacked into one vectorized call per
+        sampling batch, on top of ``explain_quality_batch``'s own reduction from
+        O(n_samples) to O(n_samples / batch_size) Python calls.
+
+        Args:
+            x: The instance to explain — array-like, shape (n_features,).
+            **kwargs: Additional keyword arguments forwarded to ``explain_quality_batch()``.
+
+        Returns:
+            Diagnostics dict from ``ASVExplainer.explain_quality_batch()``.
+        """
+        if self._baseline != "background_expectation":
+            raise ValueError(
+                "explain_instance_quality_batch requires baseline='background_expectation' "
+                f"(got {self._baseline!r}); other baselines don't have a batchable "
+                "per-coalition cost worth collapsing this way"
+            )
+        value_fn_batch = _tabular_value_fn_batch(
+            self._model,
+            x,
+            self._background,
+            self._feature_names,
+        )
+        return self._explainer.explain_quality_batch(value_fn_batch, **kwargs)

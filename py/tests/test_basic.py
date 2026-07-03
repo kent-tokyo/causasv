@@ -504,6 +504,48 @@ def test_tabular_explainer_forwards_baseline():
     assert abs(sum(values.values()) - (x.sum() - median_sum)) < 1e-6
 
 
+def test_tabular_explainer_quality_batch_background_expectation():
+    np = pytest.importorskip("numpy")
+    from causasv import TabularExplainer
+
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0], [3.0, 4.0]])
+    x = np.array([10.0, 20.0])
+    feature_names = ["f0", "f1"]
+    # Chain has exactly one valid topological order: zero sampling variance, so the
+    # adaptive batch path should match exact bit-for-bit (up to float tolerance).
+    dag = CausalDAG.from_edges([("f0", "f1")])
+
+    explainer = TabularExplainer.from_model(
+        SumModel(), dag, background, feature_names, baseline="background_expectation"
+    )
+    exact_values = explainer.explain_instance(x, method="exact")
+    batch_result = explainer.explain_instance_quality_batch(x, seed=0)
+    for name in feature_names:
+        assert abs(batch_result["values"][name] - exact_values[name]) < 1e-6
+
+
+def test_tabular_explainer_quality_batch_requires_background_expectation():
+    np = pytest.importorskip("numpy")
+    from causasv import TabularExplainer
+
+    class SumModel:
+        def predict(self, X):
+            return X.sum(axis=1)
+
+    background = np.array([[1.0, 2.0], [3.0, 4.0]])
+    x = np.array([10.0, 20.0])
+    feature_names = ["f0", "f1"]
+    dag = CausalDAG.from_edges([("f0", "f1")])
+
+    explainer = TabularExplainer.from_model(SumModel(), dag, background, feature_names)
+    with pytest.raises(ValueError):
+        explainer.explain_instance_quality_batch(x)
+
+
 def test_make_tabular_value_fn():
     np = pytest.importorskip("numpy")
     from causasv import make_tabular_value_fn
@@ -578,6 +620,77 @@ def test_make_tabular_value_fn_background_expectation():
     row1 = x[0] + background[1, 1] + background[1, 2]
     expected = (row0 + row1) / 2
     assert abs(value_fn(["f0"]) - expected) < 1e-9
+
+
+def test_make_tabular_value_fn_background_expectation_vectorizes_default_predict_fn():
+    _, _, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    calls = []
+
+    class CountingModel:
+        def predict(self, X):
+            calls.append(len(X))
+            return X.sum(axis=1)
+
+    value_fn = make_tabular_value_fn(
+        CountingModel(), x, background, feature_names, baseline="background_expectation"
+    )
+    result = value_fn(["f0"])
+
+    # One vectorized call covering all background rows, not one call per row.
+    assert calls == [len(background)]
+    row0 = x[0] + background[0, 1] + background[0, 2]
+    row1 = x[0] + background[1, 1] + background[1, 2]
+    assert abs(result - (row0 + row1) / 2) < 1e-9
+
+
+def test_make_tabular_value_fn_background_expectation_custom_predict_fn_falls_back_to_loop():
+    _, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    calls = []
+
+    def custom_predict_fn(row):
+        calls.append(row.shape)
+        return float(row.sum())
+
+    value_fn = make_tabular_value_fn(
+        model,
+        x,
+        background,
+        feature_names,
+        baseline="background_expectation",
+        predict_fn=custom_predict_fn,
+    )
+    result = value_fn(["f0"])
+
+    # A custom scalar predict_fn without a matching predict_fn_batch can't be assumed
+    # to vectorize safely, so the per-row loop is preserved.
+    assert len(calls) == len(background)
+    row0 = x[0] + background[0, 1] + background[0, 2]
+    row1 = x[0] + background[1, 1] + background[1, 2]
+    assert abs(result - (row0 + row1) / 2) < 1e-9
+
+
+def test_make_tabular_value_fn_background_expectation_explicit_predict_fn_batch():
+    _, model, background, x, feature_names = _tabular_test_fixture()
+    from causasv import make_tabular_value_fn
+
+    def custom_batch(rows):
+        return rows.sum(axis=1)
+
+    value_fn = make_tabular_value_fn(
+        model,
+        x,
+        background,
+        feature_names,
+        baseline="background_expectation",
+        predict_fn_batch=custom_batch,
+    )
+    row0 = x[0] + background[0, 1] + background[0, 2]
+    row1 = x[0] + background[1, 1] + background[1, 2]
+    assert abs(value_fn(["f0"]) - (row0 + row1) / 2) < 1e-9
 
 
 def test_make_tabular_value_fn_custom_imputer_baseline():
