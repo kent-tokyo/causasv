@@ -767,3 +767,168 @@ def test_grouped_cv_never_splits_a_group_across_train_and_test(tmp_path):
         assert not (train_groups & test_groups)
     model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
     assert sum(fd["test_record_count"] for fd in model.metadata["fold_details"]) == len(ds.y)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: DAG-aware attribution (global/local value functions)
+# ---------------------------------------------------------------------------
+
+
+def _write_dag(tmp_path, name, nodes, edges):
+    path = tmp_path / name
+    path.write_text(json.dumps({"nodes": nodes, "edges": [{"from": a, "to": b} for a, b in edges]}))
+    return str(path)
+
+
+def test_dag_json_uses_compact_separators_round_trip():
+    """CausalDAG.from_json's hand-rolled parser matches the literal substring
+    '"from":"' with NO space -- json.dumps's default '", "' spacing makes every
+    node/edge search silently miss (empty graph, no error). Locks in that
+    _dag_json always uses separators=(',', ':')."""
+    s = inst._dag_json(["a", "b"], [("a", "b")])
+    assert '"from":"a","to":"b"' in s
+    assert '"nodes":["a","b"]' in s
+
+    from causasv import CausalDAG
+
+    dag = CausalDAG.from_json(s)
+    assert sorted(dag.nodes()) == ["a", "b"]
+    assert dag.edges() == [("a", "b")]
+
+
+def test_load_attribution_dag_strips_sink_node(tmp_path):
+    path = _write_dag(
+        tmp_path,
+        "dag.json",
+        ["budget", "source_root_id", "instability_prediction"],
+        [("budget", "instability_prediction"), ("source_root_id", "instability_prediction")],
+    )
+    dag = inst.load_attribution_dag(path, ["budget", "source_root_id"])
+    assert sorted(dag.nodes()) == ["budget", "source_root_id"]
+    assert dag.edges() == []
+
+
+def test_load_attribution_dag_rejects_sink_with_outgoing_edges(tmp_path):
+    path = _write_dag(
+        tmp_path,
+        "dag.json",
+        ["budget", "instability_prediction"],
+        [("instability_prediction", "budget")],
+    )
+    with pytest.raises(ValueError, match="must be a pure sink"):
+        inst.load_attribution_dag(path, ["budget"])
+
+
+def test_load_attribution_dag_rejects_unknown_and_missing_nodes(tmp_path):
+    path = _write_dag(tmp_path, "dag.json", ["budget", "mystery"], [("budget", "mystery")])
+    with pytest.raises(ValueError, match="missing from DAG.*source_root_id"):
+        inst.load_attribution_dag(path, ["budget", "source_root_id"])
+
+
+def test_load_attribution_dag_rejects_cycle(tmp_path):
+    path = _write_dag(
+        tmp_path, "dag.json", ["a", "b"], [("a", "b"), ("b", "a")]
+    )
+    with pytest.raises(ValueError, match="cycle"):
+        inst.load_attribution_dag(path, ["a", "b"])
+
+
+def test_load_attribution_dag_no_sink_present(tmp_path):
+    """A DAG with no sink node at all (already just the feature set) works unchanged."""
+    path = _write_dag(tmp_path, "dag.json", ["a", "b"], [("a", "b")])
+    dag = inst.load_attribution_dag(path, ["a", "b"])
+    assert sorted(dag.nodes()) == ["a", "b"]
+    assert dag.edges() == [("a", "b")]
+
+
+def test_global_value_fn_satisfies_efficiency_axiom(tmp_path):
+    from causasv import ASVExplainer
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag_path = _write_dag(
+        tmp_path, "dag.json", ["budget", "source_root_id"], [("budget", "source_root_id")]
+    )
+    dag = inst.load_attribution_dag(dag_path, ds.feature_names)
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    asv = ASVExplainer(dag).explain(value_fn, method="exact")
+    assert sum(asv.values()) == pytest.approx(
+        value_fn(ds.feature_names) - value_fn([]), abs=1e-9
+    )
+
+
+def test_global_value_fn_matches_existing_exact_oracle(tmp_path):
+    """Spec test #8: our value functions must be well-behaved (deterministic, pure)
+    enough that causasv's own exact algorithms agree with each other on them --
+    we don't build a new oracle, we just have to not break the existing one's
+    assumptions (no hidden randomness, same coalition -> same value)."""
+    from causasv import ASVExplainer
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag_path = _write_dag(
+        tmp_path, "dag.json", ["budget", "source_root_id"], [("budget", "source_root_id")]
+    )
+    dag = inst.load_attribution_dag(dag_path, ds.feature_names)
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    explainer = ASVExplainer(dag)
+    oracle = explainer.explain(value_fn, method="exact")
+    auto = explainer.explain(value_fn, method="auto")
+    for feat in oracle:
+        assert oracle[feat] == pytest.approx(auto[feat], abs=1e-9)
+
+
+def test_global_value_fn_is_memoized(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    ds_features = ds.feature_names
+
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    v1 = value_fn(["budget"])
+    v2 = value_fn(list(reversed(["budget"])))  # same coalition, different order
+    assert v1 == v2
+    # calling again must hit the cache, not re-fit -- verified indirectly via
+    # identical float bit-pattern across repeated calls (deterministic retrain
+    # would also match, so this mainly guards against a cache-key bug).
+    assert v1 == value_fn(["budget"])
+    assert ds_features == ds.feature_names  # coalition call didn't mutate the dataset
+
+
+def test_global_value_fn_rejects_unknown_feature(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    with pytest.raises(ValueError, match="unknown feature"):
+        value_fn(["not_a_real_feature"])
+
+
+def test_local_value_fn_satisfies_efficiency_axiom(tmp_path):
+    from causasv import ASVExplainer
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag_path = _write_dag(
+        tmp_path, "dag.json", ["budget", "source_root_id"], [("budget", "source_root_id")]
+    )
+    dag = inst.load_attribution_dag(dag_path, ds.feature_names)
+    model_result = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    local_fn = inst.make_local_value_fn(model_result, sample_index=0)
+    asv = ASVExplainer(dag).explain(local_fn, method="exact")
+    assert sum(asv.values()) == pytest.approx(
+        local_fn(ds.feature_names) - local_fn([]), abs=1e-9
+    )
+
+
+def test_local_value_fn_rejects_unknown_feature(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    model_result = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    local_fn = inst.make_local_value_fn(model_result, sample_index=0)
+    with pytest.raises(ValueError, match="unknown feature"):
+        local_fn(["not_a_real_feature"])
+
+
+def test_global_and_local_value_fns_are_not_the_same_scale(tmp_path):
+    """Global (held-out CV quality) and local (single-instance prediction) modes
+    must not be conflated -- they answer different questions."""
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    global_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    model_result = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    local_fn = inst.make_local_value_fn(model_result, sample_index=0)
+    # global v(empty) is a CV metric (e.g. negative log loss, can be very negative);
+    # local v(empty) is a probability in [0, 1]. They must not collide by accident.
+    assert not (0.0 <= global_fn([]) <= 1.0 and global_fn([]) == local_fn([]))
