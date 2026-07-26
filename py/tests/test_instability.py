@@ -1272,3 +1272,67 @@ def test_example_cli_rejects_cell_features_with_single_file_input(tmp_path):
     )
     assert result.returncode != 0
     assert "aggregate scored report has lost config-level variation" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Approx-path integration (spec items #9, #10) and malformed-DAG rejection (#14)
+#
+# causasv's own approx-sampling correctness (CI coverage, ESS accuracy) is
+# already exhaustively tested upstream (test_diagnostics.py, test_ci_coverage.py,
+# approx_accuracy_tests.rs). What's tested here is narrower: that
+# explain_with_dag_sensitivity correctly surfaces stderr/CI/ESS/seed-rank-
+# stability when the underlying explain_safe call actually takes the approx
+# path -- forced via a dense 25-node DAG too large for the exact_dag_sparse
+# threshold, mirroring test_diagnostics.py's own approx-forcing pattern. A
+# plain additive value function is used here (not one of this module's own
+# value functions) since the point is to test the wrapper's plumbing, not
+# re-derive causasv's numerics.
+# ---------------------------------------------------------------------------
+
+
+def _dense_dag(n=25):
+    from causasv import CausalDAG
+
+    edges = [("n0", f"n{i}") for i in range(1, n)]
+    edges += [(f"n{i}", f"n{n - 1}") for i in range(1, n - 1)]
+    return CausalDAG.from_edges(edges)
+
+
+def test_explain_with_dag_sensitivity_approx_path_reports_ci_stderr_ess():
+    dag = _dense_dag()
+
+    def value_fn(coalition):
+        return float(len(coalition))
+
+    result = inst.explain_with_dag_sensitivity(
+        [dag], value_fn, seed=0, min_samples=200, max_samples=2_000
+    )
+    primary = result["per_dag_results"][0]
+    assert primary["is_exact"] is False
+    assert primary["ess_ratio"] is not None
+    assert 0.0 < primary["ess_ratio"] <= 1.0
+    for feat in primary["values"]:
+        assert primary["stderr"][feat] is not None
+        assert primary["ci_low"][feat] <= primary["ci_high"][feat]
+
+
+def test_explain_with_dag_sensitivity_approx_path_reports_real_seed_rank_stability():
+    dag = _dense_dag()
+
+    def value_fn(coalition):
+        return float(len(coalition))
+
+    result = inst.explain_with_dag_sensitivity(
+        [dag], value_fn, seed=0, min_samples=200, max_samples=2_000, stability_seeds=5
+    )
+    primary = result["per_dag_results"][0]
+    assert primary["is_exact"] is False
+    assert primary["rank_stability"] is not None
+    assert -1.0 <= primary["rank_stability"] <= 1.0
+
+
+def test_load_attribution_dag_rejects_missing_nodes_key(tmp_path):
+    path = tmp_path / "malformed.json"
+    path.write_text(json.dumps({"edges": [{"from": "a", "to": "b"}]}))
+    with pytest.raises(ValueError, match="has no nodes"):
+        inst.load_attribution_dag(str(path), ["a", "b"])
