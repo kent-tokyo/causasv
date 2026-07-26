@@ -75,11 +75,20 @@ fn find_path(dag: &Dag, current: NodeId, target: NodeId, path: &mut Vec<NodeId>)
 
 /// Enumerate all order ideals (downward-closed subsets) of a forest given by its root nodes.
 /// Each ideal is returned as a sorted Vec<NodeId>. ∅ is always included.
-pub(crate) fn enumerate_order_ideals(dag: &Dag, roots: &[NodeId]) -> Vec<Vec<NodeId>> {
+///
+/// `memo` caches `tree_ideals` results by subtree root across calls — callers that repeat
+/// the same root (e.g. `tree_exact_asv`'s per-target-node side-subtree lookups sharing
+/// ancestors) avoid re-enumerating identical subtrees.
+pub(crate) fn enumerate_order_ideals(
+    dag: &Dag,
+    roots: &[NodeId],
+    memo: &mut HashMap<NodeId, Vec<Vec<NodeId>>>,
+) -> Vec<Vec<NodeId>> {
     if roots.is_empty() {
         return vec![vec![]];
     }
-    let per_tree: Vec<Vec<Vec<NodeId>>> = roots.iter().map(|&r| tree_ideals(dag, r)).collect();
+    let per_tree: Vec<Vec<Vec<NodeId>>> =
+        roots.iter().map(|&r| tree_ideals(dag, r, memo)).collect();
     cartesian_product_vecs(&per_tree)
         .into_iter()
         .map(|mut v| {
@@ -89,10 +98,23 @@ pub(crate) fn enumerate_order_ideals(dag: &Dag, roots: &[NodeId]) -> Vec<Vec<Nod
         .collect()
 }
 
-fn tree_ideals(dag: &Dag, root: NodeId) -> Vec<Vec<NodeId>> {
+/// `tree_ideals(dag, root)` depends only on `root`'s subtree, never on the caller's
+/// context, so it's memoized by `root` — see `enumerate_order_ideals`.
+fn tree_ideals(
+    dag: &Dag,
+    root: NodeId,
+    memo: &mut HashMap<NodeId, Vec<Vec<NodeId>>>,
+) -> Vec<Vec<NodeId>> {
+    if let Some(cached) = memo.get(&root) {
+        return cached.clone();
+    }
+    #[cfg(test)]
+    tests::TREE_IDEALS_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let children = dag.children_raw(root);
-    let children_ideals: Vec<Vec<Vec<NodeId>>> =
-        children.iter().map(|&c| tree_ideals(dag, c)).collect();
+    let children_ideals: Vec<Vec<Vec<NodeId>>> = children
+        .iter()
+        .map(|&c| tree_ideals(dag, c, memo))
+        .collect();
 
     let mut result = vec![vec![]]; // ∅ is always an order ideal
     for combo in cartesian_product_vecs(&children_ideals) {
@@ -102,6 +124,7 @@ fn tree_ideals(dag: &Dag, root: NodeId) -> Vec<Vec<NodeId>> {
         ideal.sort_unstable();
         result.push(ideal);
     }
+    memo.insert(root, result.clone());
     result
 }
 
@@ -185,6 +208,7 @@ where
 
     let mut phi = vec![0.0f64; n];
     let mut cache = HashMap::<u64, f64>::new();
+    let mut ideals_memo: HashMap<NodeId, Vec<Vec<NodeId>>> = HashMap::new();
 
     for i in dag.all_nodes() {
         let anc = ancestors_of(dag, i, root);
@@ -201,7 +225,7 @@ where
                 .copied()
                 .filter(|&c| c != on_path)
                 .collect();
-            ideals_per_level.push(enumerate_order_ideals(dag, &side));
+            ideals_per_level.push(enumerate_order_ideals(dag, &side, &mut ideals_memo));
         }
 
         // Iterate over all combinations (one ideal per level).
@@ -244,4 +268,95 @@ where
         fallback_reason: None,
         method_used: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Counts actual `tree_ideals` recursive-body executions (cache misses only) —
+    // a wall-clock-noise-immune way to measure the memoization's effect: build a
+    // deliberately redundant tree, then compare this count with a shared memo
+    // (real `tree_exact_asv` behavior) vs a fresh memo per call (equivalent to no
+    // memoization at all, since every call is then guaranteed to miss).
+    pub(super) static TREE_IDEALS_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn add_balanced_subtree(dag: &mut Dag, parent: NodeId, depth: usize, prefix: &str) {
+        if depth == 0 {
+            return;
+        }
+        let left = dag.add_node(&format!("{prefix}l"));
+        let right = dag.add_node(&format!("{prefix}r"));
+        dag.add_edge(parent, left).unwrap();
+        dag.add_edge(parent, right).unwrap();
+        add_balanced_subtree(dag, left, depth - 1, &format!("{prefix}l"));
+        add_balanced_subtree(dag, right, depth - 1, &format!("{prefix}r"));
+    }
+
+    /// Root with `num_branches` children, each the root of its own balanced binary
+    /// subtree of the given `depth` — every target node under branch B shares the
+    /// *same* "side" siblings {other branches} at the root ancestor level, so those
+    /// siblings' order ideals are prime candidates for redundant re-enumeration.
+    fn star_of_balanced_subtrees(num_branches: usize, depth: usize) -> Dag {
+        let mut dag = Dag::new();
+        let root = dag.add_node("root");
+        for b in 0..num_branches {
+            let branch_root = dag.add_node(&format!("b{b}"));
+            dag.add_edge(root, branch_root).unwrap();
+            add_balanced_subtree(&mut dag, branch_root, depth, &format!("b{b}"));
+        }
+        dag
+    }
+
+    /// Replays `tree_exact_asv`'s exact traversal shape (per target node × per ancestor
+    /// level × side subtrees), counting real `tree_ideals` invocations, with or without
+    /// memoization shared across the whole traversal.
+    fn count_tree_ideals_calls(dag: &Dag, root: NodeId, share_memo: bool) -> usize {
+        TREE_IDEALS_CALLS.store(0, Ordering::Relaxed);
+        let mut shared_memo: HashMap<NodeId, Vec<Vec<NodeId>>> = HashMap::new();
+        for i in dag.all_nodes() {
+            let anc = ancestors_of(dag, i, root);
+            let d = anc.len();
+            for k in 0..d {
+                let a_k = anc[k];
+                let on_path = if k + 1 < d { anc[k + 1] } else { i };
+                let side: Vec<NodeId> = dag
+                    .children_raw(a_k)
+                    .iter()
+                    .copied()
+                    .filter(|&c| c != on_path)
+                    .collect();
+                if share_memo {
+                    let _ = enumerate_order_ideals(dag, &side, &mut shared_memo);
+                } else {
+                    let mut fresh_memo = HashMap::new();
+                    let _ = enumerate_order_ideals(dag, &side, &mut fresh_memo);
+                }
+            }
+        }
+        TREE_IDEALS_CALLS.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn memoization_eliminates_redundant_tree_ideals_calls() {
+        let dag = star_of_balanced_subtrees(4, 3); // n = 1 + 4*15 = 61 <= 64
+        let root = find_rooted_tree_root(&dag).unwrap();
+        assert!(dag.node_count() <= 64);
+
+        let calls_no_memo = count_tree_ideals_calls(&dag, root, false);
+        let calls_with_memo = count_tree_ideals_calls(&dag, root, true);
+
+        assert!(
+            calls_with_memo < calls_no_memo,
+            "memoization should strictly reduce recursive tree_ideals invocations: \
+             with_memo={calls_with_memo} >= no_memo={calls_no_memo}"
+        );
+        println!(
+            "star_of_balanced_subtrees(4,3), n={}: tree_ideals invocations \
+             no_memo={calls_no_memo} with_memo={calls_with_memo} ({:.1}x fewer)",
+            dag.node_count(),
+            calls_no_memo as f64 / calls_with_memo as f64
+        );
+    }
 }
