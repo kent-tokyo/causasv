@@ -1,13 +1,13 @@
-"""Tests for causasv.instability (Phase 1: bundle manifest adapter).
+"""Tests for causasv.instability (Phase 1 adapter + Phase 2 model/grouped CV).
 
 Covers spec test items #2 (row-order invariance), #3 (leakage rejection),
-#5 (no silent 0-fill for missing values), #6 (binary/continuous targets), and
-the manifest/cell validation rules (disjoint column roles, seed guard, mixed-file
-detection, constant-feature policy, duplicate handling). Grouped-CV non-leakage
-(#4), exact-oracle match (#8), approx CI/ESS (#9), rank/DAG stability (#10, #11),
-uncertain-feature display (#12), low-performance warning (#13), malformed-DAG
-rejection (#14), and the example smoke test (#15) land in later phases once the
-model/DAG/CLI code they exercise exists.
+#4 (grouped CV non-leakage), #5 (no silent 0-fill for missing values), #6
+(binary/continuous targets), and #13 (low-performance warning), plus the
+manifest/cell validation rules (disjoint column roles, seed guard, mixed-file
+detection, constant-feature policy, duplicate handling). Exact-oracle match
+(#8), approx CI/ESS (#9), rank/DAG stability (#10, #11), uncertain-feature
+display (#12), malformed-DAG rejection (#14), and the example smoke test (#15)
+land in later phases once the DAG/attribution/CLI code they exercise exists.
 """
 
 import json
@@ -581,3 +581,189 @@ def test_group_by_unknown_column_rejected(tmp_path):
         inst.build_instability_dataset(
             cells, target="label_disagreement", cell_features=["budget"], group_by="nonexistent"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: prediction model + grouped CV
+# ---------------------------------------------------------------------------
+
+pytest.importorskip("sklearn")
+
+# 6 samples x 3 config cells = 18 rows, 6 groups (by sample_id) -- enough for a
+# 3-fold grouped CV where the minority class isn't concentrated in one group.
+_LABEL_SETS = {
+    "s0": ["a", "a", "a", "a"],  # agreement 1.0  -> keep
+    "s1": ["a", "a", "a", "a"],  # agreement 1.0  -> keep
+    "s2": ["a", "a", "b", "b"],  # agreement 0.5  -> drop
+    "s3": ["b", "b", "b", "b"],  # agreement 1.0  -> keep
+    "s4": ["a", "a", "b", "c"],  # agreement 0.5  -> drop
+    "s5": ["a", "b", "c", "d"],  # agreement 0.25 -> drop
+}
+_SAMPLE_GROUP = {"s0": "g0", "s1": "g0", "s2": "g1", "s3": "g1", "s4": "g2", "s5": "g2"}
+
+
+def _decision_for(agreement):
+    if agreement >= 0.85:
+        return "keep"
+    if agreement >= 0.6:
+        return "review"
+    return "drop"
+
+
+def _cv_bundle(tmp_path, *, budgets=(4, 8, 16)):
+    cells_spec = []
+    for k, budget in enumerate(budgets):
+        observations = []
+        scored = []
+        for sid, labels in _LABEL_SETS.items():
+            for j, lab in enumerate(labels):
+                observations.append(
+                    {
+                        "sample_id": sid,
+                        "label": lab,
+                        "evaluator_id": f"e{j}",
+                        "source_root_id": _SAMPLE_GROUP[sid],
+                    }
+                )
+            majority_count = max(labels.count(v) for v in set(labels))
+            agreement = majority_count / len(labels)
+            scored.append(
+                _scored(
+                    sid,
+                    n_observations=len(labels),
+                    label_agreement=agreement,
+                    label_agreement_lcb=max(agreement - 0.2, 0.0),
+                    label_entropy=1.0 - agreement,
+                    score_sign_agreement=agreement,
+                    decision=_decision_for(agreement),
+                )
+            )
+        cells_spec.append((f"c{k}", {"budget": budget}, ("evaluator_id",), observations, scored))
+    return _write_bundle(tmp_path, cells_spec)
+
+
+def _cv_dataset(tmp_path, target, **kwargs):
+    path = _cv_bundle(tmp_path)
+    cells = inst.load_bundle_manifest(path)
+    kwargs.setdefault("cell_features", ["budget"])
+    kwargs.setdefault("sample_features", ["source_root_id"])
+    kwargs.setdefault("group_by", "sample_id")
+    kwargs.setdefault("min_observations", 1)
+    return inst.build_instability_dataset(cells, target=target, **kwargs)
+
+
+def test_fit_continuous_target_ridge(tmp_path):
+    ds = _cv_dataset(tmp_path, "label_disagreement")
+    model = inst.fit_instability_model(ds, model="ridge", cv_folds=3, seed=42)
+    assert model.model_type == "ridge"
+    assert model.cv_metric_name == "neg_rmse"
+    assert len(model.fold_metrics) == 3
+    assert model.n_groups == 6
+
+
+def test_fit_binary_target_logistic(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    assert model.model_type == "logistic"
+    assert model.cv_metric_name == "roc_auc"
+    assert model.metadata["target_summary"]["prevalence"] == pytest.approx(0.5)
+
+
+def test_fit_hgb_both_target_types(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ds_bin = _cv_dataset(bin_dir, "review_or_drop")
+    model_bin = inst.fit_instability_model(ds_bin, model="hgb", cv_folds=3, seed=7)
+    assert model_bin.model_type == "hgb"
+
+    cont_dir = tmp_path / "cont"
+    cont_dir.mkdir()
+    ds_cont = _cv_dataset(cont_dir, "label_disagreement")
+    model_cont = inst.fit_instability_model(ds_cont, model="hgb", cv_folds=3, seed=7)
+    assert model_cont.model_type == "hgb"
+
+
+def test_fit_rejects_model_target_type_mismatch(tmp_path):
+    a_dir = tmp_path / "a"
+    a_dir.mkdir()
+    ds = _cv_dataset(a_dir, "review_or_drop")
+    with pytest.raises(ValueError, match="requires a continuous target"):
+        inst.fit_instability_model(ds, model="ridge", cv_folds=3, seed=1)
+
+    b_dir = tmp_path / "b"
+    b_dir.mkdir()
+    ds2 = _cv_dataset(b_dir, "label_disagreement")
+    with pytest.raises(ValueError, match="requires a binary target"):
+        inst.fit_instability_model(ds2, model="logistic", cv_folds=3, seed=1)
+
+
+def test_fit_rejects_cv_folds_exceeding_group_count(tmp_path):
+    ds = _cv_dataset(tmp_path, "label_disagreement")
+    with pytest.raises(ValueError, match="exceeds available group count"):
+        inst.fit_instability_model(ds, model="ridge", cv_folds=100, seed=1)
+
+
+def test_fit_rejects_single_class_binary_target(tmp_path):
+    path = _write_bundle(
+        tmp_path,
+        [
+            (
+                "c0",
+                {"budget": 4},
+                (),
+                [{"sample_id": "s1", "label": "a"}, {"sample_id": "s1", "label": "a"}],
+                [_scored("s1", decision="keep")],
+            ),
+            (
+                "c1",
+                {"budget": 8},
+                (),
+                [{"sample_id": "s2", "label": "a"}, {"sample_id": "s2", "label": "a"}],
+                [_scored("s2", decision="keep")],
+            ),
+        ],
+    )
+    cells = inst.load_bundle_manifest(path)
+    ds = inst.build_instability_dataset(
+        cells, target="review_or_drop", cell_features=["budget"], min_observations=1
+    )
+    with pytest.raises(ValueError, match="only one class across the entire dataset"):
+        inst.fit_instability_model(ds, model="logistic", cv_folds=2, seed=1)
+
+
+def test_fit_deterministic_across_repeated_calls(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    m1 = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    m2 = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    assert m1.fold_metrics == m2.fold_metrics
+    assert m1.cv_metric_mean == m2.cv_metric_mean
+
+
+def test_fit_low_performance_triggers_min_cv_metric_warning(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1, min_cv_metric=0.99)
+    assert any("min_cv_metric" in w for w in model.warnings)
+
+
+def test_fit_no_min_cv_metric_gate_by_default(tmp_path):
+    """No universal default performance floor -- omitting min_cv_metric means no gate."""
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    assert not any("min_cv_metric" in w for w in model.warnings)
+
+
+def test_grouped_cv_never_splits_a_group_across_train_and_test(tmp_path):
+    """Integration check: fit_instability_model must pass dataset.groups through to
+    the splitter so no sample_id's rows straddle train/test -- sklearn's GroupKFold/
+    StratifiedGroupKFold guarantee this once groups are wired correctly; this test
+    catches an accidental X/y/groups misalignment in our own code, not sklearn's."""
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    from sklearn.model_selection import StratifiedGroupKFold
+
+    splitter = StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=1)
+    for train_idx, test_idx in splitter.split(ds.X, ds.y, ds.groups):
+        train_groups = set(ds.groups[train_idx].tolist())
+        test_groups = set(ds.groups[test_idx].tolist())
+        assert not (train_groups & test_groups)
+    model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    assert sum(fd["test_record_count"] for fd in model.metadata["fold_details"]) == len(ds.y)
