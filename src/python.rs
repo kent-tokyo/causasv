@@ -85,12 +85,12 @@ impl PyCausalDAG {
     ///
     /// Format: `{"nodes":["a","b"],"edges":[{"from":"a","to":"b"}]}`
     fn to_json(&self) -> String {
-        let nodes: Vec<String> = self
+        let nodes: Vec<serde_json::Value> = self
             .inner
             .all_nodes()
-            .map(|id| format!("\"{}\"", self.inner.node_name(id).unwrap()))
+            .map(|id| serde_json::Value::from(self.inner.node_name(id).unwrap()))
             .collect();
-        let edges: Vec<String> = self
+        let edges: Vec<serde_json::Value> = self
             .inner
             .all_nodes()
             .flat_map(|from_id| {
@@ -99,68 +99,61 @@ impl PyCausalDAG {
                     .children_raw(from_id)
                     .iter()
                     .map(move |&to_id| {
-                        format!(
-                            "{{\"from\":\"{}\",\"to\":\"{}\"}}",
-                            from,
-                            self.inner.node_name(to_id).unwrap()
-                        )
+                        serde_json::json!({
+                            "from": from,
+                            "to": self.inner.node_name(to_id).unwrap(),
+                        })
                     })
                     .collect::<Vec<_>>()
             })
             .collect();
-        format!(
-            "{{\"nodes\":[{}],\"edges\":[{}]}}",
-            nodes.join(","),
-            edges.join(",")
-        )
+        serde_json::json!({"nodes": nodes, "edges": edges}).to_string()
     }
 
     /// Construct a DAG from the JSON format produced by `to_json()`.
     ///
-    /// Accepts `{"nodes":[...],"edges":[{"from":"a","to":"b"},...]}`
-    /// Unknown keys are ignored. Nodes listed only in `"nodes"` (no edges) are added as isolates.
+    /// Accepts `{"nodes":[...],"edges":[{"from":"a","to":"b"},...]}`, parsed as
+    /// structural JSON (whitespace/formatting-insensitive, matching e.g. Python's
+    /// `json.dumps()` default output, not just `to_json()`'s own compact style).
+    /// Unknown keys are ignored. Nodes listed only in `"nodes"` (no edges) are added
+    /// as isolates. Malformed JSON, or `"nodes"`/`"edges"` present but not shaped as
+    /// documented, raises `ValueError` rather than silently producing an empty or
+    /// partial graph.
     #[staticmethod]
     fn from_json(s: &str) -> PyResult<Self> {
-        // ponytail: hand-rolled parser — avoids serde dependency for simple known format
+        let value: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| PyValueError::new_err(format!("malformed JSON: {e}")))?;
         let mut inner = RustDag::new();
-        // Extract nodes array content
-        if let Some(nodes_start) = s.find("\"nodes\":[") {
-            let rest = &s[nodes_start + 9..];
-            if let Some(end) = rest.find(']') {
-                let names_raw = &rest[..end];
-                for part in names_raw.split(',') {
-                    let name = part.trim().trim_matches('"');
-                    if !name.is_empty() {
-                        inner.add_node(name);
-                    }
-                }
+
+        if let Some(nodes) = value.get("nodes") {
+            let nodes = nodes.as_array().ok_or_else(|| {
+                PyValueError::new_err("malformed JSON: \"nodes\" must be an array")
+            })?;
+            for n in nodes {
+                let name = n.as_str().ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: \"nodes\" entries must be strings")
+                })?;
+                inner.add_node(name);
             }
         }
-        // Extract edges
-        let mut search = s;
-        while let Some(from_pos) = search.find("\"from\":\"") {
-            let after_from = &search[from_pos + 8..];
-            let from_end = after_from.find('"').ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "malformed JSON: missing closing quote after from",
-                )
+
+        if let Some(edges) = value.get("edges") {
+            let edges = edges.as_array().ok_or_else(|| {
+                PyValueError::new_err("malformed JSON: \"edges\" must be an array")
             })?;
-            let from_name = &after_from[..from_end];
-            let to_start = after_from[from_end..].find("\"to\":\"").ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("malformed JSON: missing 'to' key")
-            })?;
-            let after_to = &after_from[from_end + to_start + 6..];
-            let to_end = after_to.find('"').ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "malformed JSON: missing closing quote after to",
-                )
-            })?;
-            let to_name = &after_to[..to_end];
-            let from_id = inner.add_node(from_name);
-            let to_id = inner.add_node(to_name);
-            inner.add_edge(from_id, to_id).map_err(py_err)?;
-            search = &after_to[to_end..];
+            for e in edges {
+                let from = e.get("from").and_then(|v| v.as_str()).ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: edge missing string \"from\"")
+                })?;
+                let to = e.get("to").and_then(|v| v.as_str()).ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: edge missing string \"to\"")
+                })?;
+                let from_id = inner.add_node(from);
+                let to_id = inner.add_node(to);
+                inner.add_edge(from_id, to_id).map_err(py_err)?;
+            }
         }
+
         Ok(Self { inner })
     }
 

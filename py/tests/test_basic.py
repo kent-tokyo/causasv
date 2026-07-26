@@ -276,6 +276,78 @@ def test_dag_from_json_roundtrip():
     assert restored.edges() == dag.edges()
 
 
+def test_dag_from_json_accepts_standard_json_dumps_output():
+    """P0 regression: from_json used to hand-parse for the literal substring
+    '"from":"' (no space), so json.dumps()'s default '", "'/'": "' spacing
+    silently produced an EMPTY graph -- no error, just wrong. from_json must
+    parse real JSON structurally and treat compact and default-spaced output
+    identically."""
+    import json
+
+    payload = {"nodes": ["A", "B"], "edges": [{"from": "A", "to": "B"}]}
+    compact = json.dumps(payload, separators=(",", ":"))
+    default_spaced = json.dumps(payload)
+    assert compact != default_spaced  # sanity: actually testing two different strings
+
+    from_compact = CausalDAG.from_json(compact)
+    from_spaced = CausalDAG.from_json(default_spaced)
+    assert sorted(from_compact.nodes()) == sorted(from_spaced.nodes()) == ["A", "B"]
+    assert from_compact.edges() == from_spaced.edges() == [("A", "B")]
+
+
+def test_dag_from_json_nodes_only_graph():
+    import json
+
+    dag = CausalDAG.from_json(json.dumps({"nodes": ["solo"], "edges": []}))
+    assert dag.nodes() == ["solo"]
+    assert dag.edges() == []
+
+
+def test_dag_from_json_legitimate_empty_graph():
+    import json
+
+    for payload in ({"nodes": [], "edges": []}, {}):
+        dag = CausalDAG.from_json(json.dumps(payload))
+        assert dag.nodes() == []
+        assert dag.edges() == []
+
+
+def test_dag_from_json_rejects_malformed_json():
+    with pytest.raises(ValueError, match="malformed JSON"):
+        CausalDAG.from_json("not json at all")
+
+
+def test_dag_from_json_rejects_non_array_nodes():
+    import json
+
+    with pytest.raises(ValueError, match="\"nodes\" must be an array"):
+        CausalDAG.from_json(json.dumps({"nodes": "not-an-array"}))
+
+
+def test_dag_from_json_rejects_edge_missing_to():
+    import json
+
+    with pytest.raises(ValueError, match="\"to\""):
+        CausalDAG.from_json(json.dumps({"edges": [{"from": "a"}]}))
+
+
+def test_dag_from_json_ignores_unknown_fields():
+    import json
+
+    dag = CausalDAG.from_json(json.dumps({"nodes": ["a"], "edges": [], "extra": 123}))
+    assert dag.nodes() == ["a"]
+
+
+def test_dag_from_json_never_silently_returns_empty_for_valid_nonempty_input():
+    import json
+
+    dag = CausalDAG.from_json(
+        json.dumps({"nodes": ["p", "q"], "edges": [{"from": "p", "to": "q"}]})
+    )
+    assert len(dag.nodes()) == 2
+    assert len(dag.edges()) == 1
+
+
 def test_dag_ancestors():
     dag = CausalDAG.from_edges([("a", "b"), ("b", "c")])
     assert sorted(dag.ancestors("c")) == ["a", "b"]
