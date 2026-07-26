@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff"]
+dev = ["pytest", "pytest-cov", "ruff==0.15.20"]
 
 [tool.pytest.ini_options]
 markers = ["slow: mark test as slow-running (excluded from default CI run)"]

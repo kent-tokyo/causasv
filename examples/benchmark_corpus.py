@@ -80,7 +80,9 @@ def run(explainer, method, n):
         else:
             return None
         elapsed_ms = (time.perf_counter() - t0) * 1000
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- deliberately broad: this sweeps many
+        # (DAG, method) combinations and must record any single failure as a
+        # result row instead of aborting the whole benchmark run.
         return {"error": str(e)[:50]}
 
     ess       = r.get("ess")
