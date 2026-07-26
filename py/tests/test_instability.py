@@ -1336,3 +1336,40 @@ def test_load_attribution_dag_rejects_missing_nodes_key(tmp_path):
     path.write_text(json.dumps({"edges": [{"from": "a", "to": "b"}]}))
     with pytest.raises(ValueError, match="has no nodes"):
         inst.load_attribution_dag(str(path), ["a", "b"])
+
+
+# ---------------------------------------------------------------------------
+# Contract test: causasv/instability.py -> causasv/instability/ package split
+# must not change the public import surface (refactor(instability): split
+# workflow by responsibility -- no behavior change, no new/removed symbols).
+# ---------------------------------------------------------------------------
+
+
+def test_flat_module_public_api_preserved():
+    expected = {
+        "STABILITY_REPORT_FIELDS",
+        "SEED_LIKE_COLUMNS",
+        "TARGET_DEFINITIONS",
+        "TargetSpec",
+        "Cell",
+        "load_bundle_manifest",
+        "wrap_single_cell",
+        "InstabilityDataset",
+        "build_instability_dataset",
+        "MODEL_TYPES",
+        "InstabilityModel",
+        "fit_instability_model",
+        "DEFAULT_SINK_NODE",
+        "load_attribution_dag",
+        "make_global_value_fn",
+        "make_local_value_fn",
+        "explain_with_dag_sensitivity",
+        "SCHEMA_VERSION",
+        "build_attribution_report",
+        "summarize_attribution",
+        "dump_attribution_json",
+    }
+    missing = expected - set(dir(inst))
+    assert not missing, (
+        f"missing from causasv.instability after the package split: {sorted(missing)}"
+    )
