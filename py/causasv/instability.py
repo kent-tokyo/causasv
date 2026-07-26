@@ -703,6 +703,36 @@ class InstabilityModel:
     warnings: list[str] = field(default_factory=list)
 
 
+def _validate_cv_folds(dataset: InstabilityDataset, cv_folds: int) -> None:
+    """Shared by fit_instability_model and make_global_value_fn -- both build a
+    grouped splitter and would otherwise hit the same sklearn error deep inside
+    a coalition retrain instead of a clear message up front."""
+    if cv_folds < 2:
+        raise ValueError(f"cv_folds must be >= 2, got {cv_folds}")
+    n_groups = len(set(dataset.groups.tolist()))
+    if cv_folds > n_groups:
+        raise ValueError(
+            f"cv_folds={cv_folds} exceeds available group count {n_groups} for "
+            f"group_by={dataset.metadata.get('group_by')!r}; reduce cv_folds or "
+            "supply more groups"
+        )
+    if dataset.is_binary:
+        # cv_folds <= total groups isn't enough for StratifiedGroupKFold: it also
+        # needs at least one group per class in every fold, so the real ceiling is
+        # the minority class's own group count, not the overall group count.
+        class_groups: dict[float, set[int]] = {}
+        for g, yv in zip(dataset.groups.tolist(), dataset.y.tolist()):
+            class_groups.setdefault(yv, set()).add(g)
+        min_class_groups = min(len(gs) for gs in class_groups.values())
+        if cv_folds > min_class_groups:
+            raise ValueError(
+                f"cv_folds={cv_folds} exceeds the minority class's group count "
+                f"({min_class_groups}) for group_by={dataset.metadata.get('group_by')!r} -- "
+                "StratifiedGroupKFold needs at least one group per class in every fold; "
+                "reduce cv_folds or supply more groups for the minority class"
+            )
+
+
 def _make_estimator(model_type: str, is_binary: bool, seed: int) -> Any:
     if model_type == "logistic":
         if not is_binary:
@@ -772,15 +802,8 @@ def fit_instability_model(
             "binary target has only one class across the entire dataset -- "
             "nothing to classify or attribute"
         )
+    _validate_cv_folds(dataset, cv_folds)
     n_groups = len(set(groups.tolist()))
-    if cv_folds < 2:
-        raise ValueError(f"cv_folds must be >= 2, got {cv_folds}")
-    if cv_folds > n_groups:
-        raise ValueError(
-            f"cv_folds={cv_folds} exceeds available group count {n_groups} for "
-            f"group_by={dataset.metadata.get('group_by')!r}; reduce cv_folds or "
-            "supply more groups"
-        )
 
     if dataset.is_binary:
         splitter = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=seed)
@@ -1047,6 +1070,8 @@ def make_global_value_fn(
     """
     import numpy as np
     from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
+
+    _validate_cv_folds(dataset, cv_folds)
 
     is_binary = dataset.is_binary
     metrics = _BINARY_METRICS if is_binary else _CONTINUOUS_METRICS
