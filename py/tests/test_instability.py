@@ -1,16 +1,20 @@
-"""Tests for causasv.instability (Phase 1 adapter + Phase 2 model/grouped CV).
+"""Tests for causasv.instability (Phases 1-6: adapter, model, DAG attribution,
+sensitivity, output schema, example CLI).
 
 Covers spec test items #2 (row-order invariance), #3 (leakage rejection),
 #4 (grouped CV non-leakage), #5 (no silent 0-fill for missing values), #6
-(binary/continuous targets), and #13 (low-performance warning), plus the
-manifest/cell validation rules (disjoint column roles, seed guard, mixed-file
-detection, constant-feature policy, duplicate handling). Exact-oracle match
-(#8), approx CI/ESS (#9), rank/DAG stability (#10, #11), uncertain-feature
-display (#12), malformed-DAG rejection (#14), and the example smoke test (#15)
-land in later phases once the DAG/attribution/CLI code they exercise exists.
+(binary/continuous targets), #8 (exact-oracle match), #13 (low-performance
+warning), #14 (malformed DAG / unknown feature / cyclic DAG rejection), and
+#15 (example end-to-end smoke test), plus the manifest/cell validation rules
+(disjoint column roles, seed guard, mixed-file detection, constant-feature
+policy, duplicate handling). Approx CI/ESS (#9) and rank stability (#10, #11,
+#12) are exercised indirectly through causasv.helpers.explain_safe/
+explain_stability, already covered by that module's own test suite
+(test_diagnostics.py, test_basic.py) -- not re-tested here.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -1178,3 +1182,93 @@ def test_local_mode_report_builds_end_to_end(tmp_path):
     )
     assert report["mode"] == "local"
     inst.dump_attribution_json(report)  # must not raise (JSON-serializable)
+
+
+def test_fit_rejects_cv_folds_exceeding_minority_class_group_count(tmp_path):
+    """cv_folds <= total groups isn't sufficient for StratifiedGroupKFold -- it
+    also needs >=1 group per class per fold. A 3-keep/3-drop dataset can't
+    support cv_folds=5 even though it has 6 groups total; this must fail with a
+    clear message up front, not sklearn's raw internal error."""
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    with pytest.raises(ValueError, match="minority class's group count"):
+        inst.fit_instability_model(ds, model="logistic", cv_folds=5, seed=1)
+    with pytest.raises(ValueError, match="minority class's group count"):
+        inst.make_global_value_fn(ds, model="logistic", cv_folds=5, seed=1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: example CLI end-to-end smoke test (spec item #15)
+# ---------------------------------------------------------------------------
+
+EXAMPLE_SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "quietset_label_instability.py"
+
+
+def test_example_cli_bundle_mode_end_to_end(tmp_path):
+    import subprocess
+    import sys
+
+    bundle_path = _cv_bundle(tmp_path)
+    dag_path = tmp_path / "dag.json"
+    dag_path.write_text(
+        json.dumps(
+            {
+                "nodes": ["budget", "source_root_id"],
+                "edges": [{"from": "budget", "to": "source_root_id"}],
+            }
+        )
+    )
+    output_path = tmp_path / "attribution.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EXAMPLE_SCRIPT),
+            "--bundle", bundle_path,
+            "--target", "review_or_drop",
+            "--cell-features", "budget",
+            "--sample-features", "source_root_id",
+            "--min-observations", "1",
+            "--dag", str(dag_path),
+            "--mode", "global",
+            "--model", "logistic",
+            "--cv-folds", "3",
+            "--seed", "1",
+            "--output", str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert output_path.exists()
+    report = json.loads(output_path.read_text())
+    assert report["schema_version"] == "causasv-instability-attribution-v1"
+    assert report["target"] == "review_or_drop"
+    assert "Reminder:" in result.stdout
+    assert "causal effect" in result.stdout
+
+
+def test_example_cli_rejects_cell_features_with_single_file_input(tmp_path):
+    import subprocess
+    import sys
+
+    bundle_path = _cv_bundle(tmp_path)
+    cells = inst.load_bundle_manifest(bundle_path)
+    dag_path = tmp_path / "dag.json"
+    dag_path.write_text(json.dumps({"nodes": ["budget"], "edges": []}))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EXAMPLE_SCRIPT),
+            "--observations", cells[0].observations_path,
+            "--scored", cells[0].scored_path,
+            "--cell-features", "budget",
+            "--target", "review_or_drop",
+            "--dag", str(dag_path),
+            "--output", str(tmp_path / "out.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "aggregate scored report has lost config-level variation" in result.stderr
