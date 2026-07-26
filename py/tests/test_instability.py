@@ -932,3 +932,93 @@ def test_global_and_local_value_fns_are_not_the_same_scale(tmp_path):
     # global v(empty) is a CV metric (e.g. negative log loss, can be very negative);
     # local v(empty) is a probability in [0, 1]. They must not collide by accident.
     assert not (0.0 <= global_fn([]) <= 1.0 and global_fn([]) == local_fn([]))
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: uncertainty + DAG ensemble sensitivity
+# ---------------------------------------------------------------------------
+
+
+def test_single_dag_sensitivity_is_trivial(tmp_path):
+    """With one DAG there's nothing to compare across, so dag_rank_stability is
+    trivially 1.0 and no feature is dag_sensitive -- the single-DAG case must not
+    need a separate code path."""
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag = CausalDAG.from_edges([("budget", "source_root_id")])
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+
+    result = inst.explain_with_dag_sensitivity([dag], value_fn, seed=0)
+    assert result["dag_rank_stability"] == pytest.approx(1.0)
+    assert all(v is False for v in result["dag_sensitive"].values())
+    assert all(v is True for v in result["sign_stable"].values())
+    assert all(v == 0.0 for v in result["std_values"].values())
+    assert len(result["per_dag_results"]) == 1
+
+
+def test_single_dag_exact_has_null_seed_rank_stability(tmp_path):
+    """explain_safe already returns rank_stability=None on the exact path (no
+    seed variance exists there) -- this must pass through unchanged, not be
+    coerced into a fake 1.0."""
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag = CausalDAG.from_edges([("budget", "source_root_id")])
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+
+    result = inst.explain_with_dag_sensitivity([dag], value_fn, seed=0)
+    per_dag = result["per_dag_results"][0]
+    assert per_dag["is_exact"] is True
+    assert per_dag["rank_stability"] is None
+
+
+def test_multi_dag_rejects_mismatched_node_sets(tmp_path):
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    dag1 = CausalDAG.from_edges([("budget", "source_root_id")])
+    dag2 = CausalDAG.from_edges([("budget", "extra_node")])
+
+    with pytest.raises(ValueError, match="same node set"):
+        inst.explain_with_dag_sensitivity([dag1, dag2], value_fn, seed=0)
+
+
+def test_explain_with_dag_sensitivity_rejects_empty_dag_list(tmp_path):
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    with pytest.raises(ValueError, match="non-empty"):
+        inst.explain_with_dag_sensitivity([], value_fn, seed=0)
+
+
+def test_multi_dag_sensitivity_reports_identical_dags_as_fully_stable(tmp_path):
+    """Two copies of the same DAG must agree perfectly: rank_stability 1.0, zero
+    std, no feature flagged sensitive -- a baseline sanity check before trusting
+    the divergent-DAG case."""
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag = CausalDAG.from_edges([("budget", "source_root_id")])
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+
+    result = inst.explain_with_dag_sensitivity([dag, dag], value_fn, seed=0)
+    assert result["dag_rank_stability"] == pytest.approx(1.0)
+    for f in result["std_values"]:
+        assert result["std_values"][f] == pytest.approx(0.0, abs=1e-12)
+    assert all(v is False for v in result["dag_sensitive"].values())
+
+
+def test_multi_dag_mean_values_match_manual_average(tmp_path):
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    dag1 = CausalDAG.from_edges([("budget", "source_root_id")])
+    dag2 = CausalDAG.from_edges([("source_root_id", "budget")])
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+
+    result = inst.explain_with_dag_sensitivity([dag1, dag2], value_fn, seed=0)
+    v1 = result["per_dag_results"][0]["values"]
+    v2 = result["per_dag_results"][1]["values"]
+    for f in result["mean_values"]:
+        assert result["mean_values"][f] == pytest.approx((v1[f] + v2[f]) / 2)
