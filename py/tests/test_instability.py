@@ -1022,3 +1022,159 @@ def test_multi_dag_mean_values_match_manual_average(tmp_path):
     v2 = result["per_dag_results"][1]["values"]
     for f in result["mean_values"]:
         assert result["mean_values"][f] == pytest.approx((v1[f] + v2[f]) / 2)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: output schema
+# ---------------------------------------------------------------------------
+
+
+def _build_report(
+    tmp_path, *, dags=None, mode="global", min_cv_metric=None, target="review_or_drop"
+):
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, target)
+    model = inst.fit_instability_model(
+        ds, model="logistic" if ds.is_binary else "ridge", cv_folds=3, seed=1,
+        min_cv_metric=min_cv_metric,
+    )
+    if dags is None:
+        dags = [CausalDAG.from_edges([("budget", "source_root_id")])]
+    value_fn = inst.make_global_value_fn(
+        ds, model="logistic" if ds.is_binary else "ridge", cv_folds=3, seed=1
+    )
+    sens = inst.explain_with_dag_sensitivity(dags, value_fn, seed=0)
+    report = inst.build_attribution_report(
+        dataset=ds, model_result=model, sensitivity_result=sens, mode=mode
+    )
+    return ds, model, sens, report
+
+
+def test_report_has_required_schema_keys(tmp_path):
+    _, _, _, report = _build_report(tmp_path)
+    assert report["schema_version"] == "causasv-instability-attribution-v1"
+    assert report["target"] == "review_or_drop"
+    assert report["mode"] == "global"
+    assert {"type", "group_column", "cv_metric", "min_cv_metric", "meets_min_cv_metric"} <= set(
+        report["model"]
+    )
+    assert {"method", "is_exact", "ess_ratio", "seed_rank_stability", "dag_rank_stability"} <= set(
+        report["asv_diagnostics"]
+    )
+    for f in report["features"]:
+        assert {
+            "name", "asv", "stderr", "ci_low", "ci_high", "rank", "sign_stable", "dag_sensitive",
+        } <= set(f)
+
+
+def test_report_rejects_unknown_mode(tmp_path):
+    ds, model, sens, _ = _build_report(tmp_path)
+    with pytest.raises(ValueError, match="mode must be"):
+        inst.build_attribution_report(
+            dataset=ds, model_result=model, sensitivity_result=sens, mode="bogus"
+        )
+
+
+def test_report_json_is_byte_identical_across_repeated_builds(tmp_path):
+    ds, model, sens, report1 = _build_report(tmp_path)
+    report2 = inst.build_attribution_report(
+        dataset=ds, model_result=model, sensitivity_result=sens, mode="global"
+    )
+    assert inst.dump_attribution_json(report1) == inst.dump_attribution_json(report2)
+
+
+def test_report_single_dag_has_null_dag_rank_stability(tmp_path):
+    """dag_rank_stability is None (not the trivial 1.0) for a single DAG -- 1.0
+    would claim a cross-DAG comparison was performed when it wasn't."""
+    _, _, _, report = _build_report(tmp_path)
+    assert report["asv_diagnostics"]["dag_rank_stability"] is None
+
+
+def test_report_multi_dag_has_numeric_dag_rank_stability(tmp_path):
+    from causasv import CausalDAG
+
+    dags = [
+        CausalDAG.from_edges([("budget", "source_root_id")]),
+        CausalDAG.from_edges([("source_root_id", "budget")]),
+    ]
+    _, _, _, report = _build_report(tmp_path, dags=dags)
+    assert report["asv_diagnostics"]["dag_rank_stability"] is not None
+    assert -1.0 <= report["asv_diagnostics"]["dag_rank_stability"] <= 1.0
+
+
+def test_summarize_insufficient_evidence_overrides_other_buckets(tmp_path):
+    _, _, _, report = _build_report(tmp_path, min_cv_metric=0.99)
+    assert report["model"]["meets_min_cv_metric"] is False
+    summary = inst.summarize_attribution(report)
+    feature_names = {f["name"] for f in report["features"]}
+    assert set(summary["insufficient_evidence"]) == feature_names
+    assert summary["robustly_attributed"] == []
+    assert summary["uncertain"] == []
+    assert summary["dag_sensitive"] == []
+
+
+def test_summarize_no_gate_set_means_not_insufficient_evidence(tmp_path):
+    _, _, _, report = _build_report(tmp_path, min_cv_metric=None)
+    assert report["model"]["meets_min_cv_metric"] is None
+    summary = inst.summarize_attribution(report)
+    assert summary["insufficient_evidence"] == []
+
+
+def test_summarize_dag_sensitive_feature_is_bucketed(tmp_path):
+    from causasv import CausalDAG
+
+    dags = [
+        CausalDAG.from_edges([("budget", "source_root_id")]),
+        CausalDAG.from_edges([("source_root_id", "budget")]),
+    ]
+    _, _, _, report = _build_report(tmp_path, dags=dags)
+    summary = inst.summarize_attribution(report)
+    sensitive_names = {f["name"] for f in report["features"] if f["dag_sensitive"]}
+    assert set(summary["dag_sensitive"]) == sensitive_names
+    for name in sensitive_names:
+        assert name not in summary["robustly_attributed"]
+        assert name not in summary["uncertain"]
+
+
+def test_summarize_uncertain_bucket_for_ci_crossing_zero(tmp_path):
+    """Build a report where a feature's CI straddles zero (via a wide-variance
+    approx path on a bigger DAG) and check it lands in 'uncertain', not
+    'robustly_attributed'."""
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    value_fn = inst.make_global_value_fn(ds, model="logistic", cv_folds=3, seed=1)
+    dag = CausalDAG.from_edges([("budget", "source_root_id")])
+    sens = inst.explain_with_dag_sensitivity([dag], value_fn, seed=0, ci=0.95)
+    report = inst.build_attribution_report(
+        dataset=ds, model_result=model, sensitivity_result=sens, mode="global"
+    )
+    # Force one feature's CI to straddle zero to exercise the bucket without
+    # depending on a specific approx-path variance outcome.
+    report["features"][0]["ci_low"] = -0.1
+    report["features"][0]["ci_high"] = 0.1
+    report["features"][0]["dag_sensitive"] = False
+    summary = inst.summarize_attribution(report)
+    assert report["features"][0]["name"] in summary["uncertain"]
+
+
+def test_report_warnings_deduplicated_across_sources(tmp_path):
+    ds, model, sens, report = _build_report(tmp_path, min_cv_metric=0.99)
+    assert len(report["warnings"]) == len(set(report["warnings"]))
+
+
+def test_local_mode_report_builds_end_to_end(tmp_path):
+    from causasv import CausalDAG
+
+    ds = _cv_dataset(tmp_path, "review_or_drop")
+    model = inst.fit_instability_model(ds, model="logistic", cv_folds=3, seed=1)
+    local_fn = inst.make_local_value_fn(model, sample_index=0)
+    dag = CausalDAG.from_edges([("budget", "source_root_id")])
+    sens = inst.explain_with_dag_sensitivity([dag], local_fn, seed=0)
+    report = inst.build_attribution_report(
+        dataset=ds, model_result=model, sensitivity_result=sens, mode="local"
+    )
+    assert report["mode"] == "local"
+    inst.dump_attribution_json(report)  # must not raise (JSON-serializable)
