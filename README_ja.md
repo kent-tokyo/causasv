@@ -272,7 +272,7 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## ステータス
 
-実験的 — v0.8.7。v1.0 以前に公開 API が変更される可能性があります。
+実験的 — v0.8.8。v1.0 以前に公開 API が変更される可能性があります。
 
 ## アルゴリズムの状況
 

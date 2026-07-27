@@ -5,6 +5,19 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.8] — 2026-07-27
+
+### Added
+- `Cpdag` type (`src/cpdag.rs`): completed partial DAG representation with directed (compelled) and undirected edges, mirroring `Dag`'s insertion-order `NodeId` conventions. `validate_pdag`/`validate_cpdag` (structural checks; the latter reuses `consistent_extension` as its extendability oracle rather than implementing chain-component chordality separately — documented boundary: does not verify directed edges are the compelled edges of a genuine Markov equivalence class). `consistent_extension`: independent Rust implementation of the Dor-Tarsi (1992)/Chickering (2002) PDAG-to-DAG algorithm, deterministic candidate selection, `Err(NotExtendable)` when no valid orientation exists (e.g. a chordless undirected cycle). `Cpdag::induced_subgraph`. Python bindings (`CausalCPDAG`), JSON round-trip.
+- `Dag::d_convex_hull`/`Dag::strong_d_convex_hull` (`src/d_convex.rs`) and `Cpdag::strong_d_convex_hull`: graph-reduction algorithms computing the minimal node set that, under the assumptions established in the referenced paper, preserves a causal-effect estimate after marginalizing out everything else. Independent implementation of the CVM/ICHA/ISCHA algorithms and the CPDAG-invariance theorem from Deng, Sun, Li & Liu, "Estimate Collapsibility of Causal Effects in Completed Partial DAGs via Strong d-Convex Hulls," arXiv:2606.08941 (2026, CC BY 4.0) — see `docs/strong_d_convex_hulls.md` for the full citation, clean-room notes, and scope/assumptions (in particular: proven only for non-adjacent target-variable pairs). `Cpdag::strong_d_convex_hull` computes via one consistent DAG extension, sound per the paper's Theorem 5 (hull vertex set is invariant across a CPDAG's whole Markov equivalence class). `Dag::induced_subgraph` (the `Dag`-level counterpart to `Cpdag::induced_subgraph`). Python bindings on both `CausalDAG` and `CausalCPDAG`. No IDA-based causal-effect estimation on the reduced graph yet — this release only performs the graph reduction step.
+- `CITATION.cff` gains a second `references` entry for the strong-d-convex-hull paper (authors, DOI, URL, CC BY 4.0 license), alongside the existing ASV-paper reference.
+
+### Tests
+- `tests/cpdag_tests.rs` / `tests/cpdag_property_tests.rs`: construction, all edge-conflict error variants, extension correctness (chordal triangle extends, chordless 4-cycle fails), a proptest property test deriving a CPDAG from a random DAG's compelled/non-compelled edge split.
+- `tests/d_convex_tests.rs` / `tests/d_convex_property_tests.rs`: hand-built fixtures on classical causal structures (chain, fork, collider, multi-parent collider) plus an independent brute-force d-separation oracle (Pearl 1988 path enumeration and collider blocking — a different algorithm from the moralization-based implementation) that cross-checks every random DAG proptest generates. The oracle caught a real over-inclusion bug during development: the paper's Algorithm 3 pseudocode literally absorbs a violating node's entire parent set, but its own Theorem 2 proof text says only the non-adjacent parents must be included — fixed to absorb only the specific violating parent pairs.
+- `py/tests/test_cpdag.py` / `py/tests/test_d_convex.py`: mirror the Rust fixtures through the Python API, plus Rust/Python result-parity and interop checks (e.g. a hull's reduced graph feeding straight into `ASVExplainer`).
+- `benches/d_convex_bench.rs`: Criterion benchmarks across chain, fork-chain, layered-sparse, and collider-rich DAG shapes.
+
 ## [0.8.7] — 2026-07-27
 
 ### Changed
