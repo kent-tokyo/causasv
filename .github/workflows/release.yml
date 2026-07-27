@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write   # required for GitHub Release creation
@@ -42,6 +43,8 @@ jobs:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.target != 'x86_64'
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: py
