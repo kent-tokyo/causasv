@@ -257,12 +257,14 @@ values = explainer.explain_instance(X_test[0], method="auto")
 | メソッド | 使用場面 | API |
 |---------|---------|-----|
 | `exact` | 小規模 DAG（n ≤ ~8）：全線形拡張を列挙 | `explainer.exact(value_fn)` |
-| `exact_tree` | 有根有向木：順序イデアル DP | `explainer.exact_tree(value_fn)` |
+| `exact_tree` | 有根有向木：順序イデアル DP；コスト予算を超える bushy な形状は拒否（下記参照） | `explainer.exact_tree(value_fn)` / `explainer.exact_tree_with_config(value_fn, &config)` |
 | `exact_dag` | 一般 DAG、n ≤ 20；密な順序イデアル DP | `explainer.exact_dag(value_fn)` |
 | `exact_dag_sparse` | 疎な DAG、n ≤ 28；有効な順序イデアルのみ BFS | `explainer.exact_dag_sparse(value_fn)` |
 | `approx` | 任意の DAG（n > 28 またはメモリ制限超過）；IS サンプリング | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` ディスパッチ：n ≤ 8 → `exact`；有根木 → `exact_tree`；n ≤ 20 → edge_count ≤ 2n なら `exact_dag_sparse` そうでなければ `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 順序イデアル数 ≤ 250k なら `exact_dag_sparse`（疎プリフライト）そうでなければ `approx`；n > 63 → `approx`。
+`auto` ディスパッチ：n ≤ 8 → `exact`；有根木 → `ExactTreeConfig` のコスト予算に収まれば `exact_tree`、収まらなければ（n ≤ 63 かつ順序イデアル数 ≤ 250k のプリフライトを満たせば）`exact_dag_sparse`、それも無理なら `approx`；n ≤ 20 → 順序イデアル数が密な状態数の半分に収まれば `exact_dag_sparse` そうでなければ `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 順序イデアル数 ≤ 250k なら `exact_dag_sparse`（疎プリフライト）そうでなければ `approx`；n > 63 → `approx`。
+
+`exact_tree` のコストはノード数 n だけでなく木の*形状*に依存します：幅・深さのある兄弟部分木を複数持つノードは大きなカルテシアン積を生みます。`exact_tree`（および `auto`/`auto_quality`）は実際に列挙する前に O(n) のプリフライト（`ExactTreeConfig`、デフォルト予算は単一ノードあたり 50,000 項・合計 200,000 項）を実行し、超過時は `ExactTreeBudgetExceeded` を返すかフォールバックします。詳細は [docs/correctness.md](docs/correctness.md#exact-method-bounds)、動機となった事例は [issue #36](https://github.com/kent-tokyo/causasv/issues/36) を参照してください。
 
 `exact_dag_sparse` は有効な順序イデアル（すべてのノードの親も存在する集合）のみを訪問します。疎な DAG では 2^n よりはるかに少ない状態で厳密計算が可能です。`n_order_ideals`・`state_ratio`・`memory_mb` の診断値を返します。
 
@@ -270,14 +272,14 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## ステータス
 
-実験的 — v0.8.5。v1.0 以前に公開 API が変更される可能性があります。
+実験的 — v0.8.6。v1.0 以前に公開 API が変更される可能性があります。
 
 ## アルゴリズムの状況
 
 | メソッド | 実装 | 備考 |
 |---------|------|------|
 | `exact` | 全線形拡張を列挙 | 参照オラクル；n ≤ ~8 で実用的 |
-| `exact_tree` | 有根木検証 + 順序イデアル DP | 効率的；フック長公式 |
+| `exact_tree` | 有根木検証 + 順序イデアル DP + コスト予算プリフライト | 効率的；フック長公式；`ExactTreeConfig` の予算を超える形状はハングせず拒否 |
 | `exact_dag` | 2^n 状態の順序イデアル DP | 一般 DAG、n ≤ 20；O(2^n × n) |
 | `exact_dag_sparse` | 有効な順序イデアルの BFS + 遅延 dp_ind | 疎 DAG、n ≤ 28；メモリ制限付き |
 | `approx` | トポロジー的順序付けの自己正規化 IS | 任意 DAG；フロンティアサンプラーのバイアスを補正 |
@@ -333,12 +335,14 @@ Apple M シリーズ（arm64、リリースビルド）での選択結果。`v(S
 | チェーン | 20 | `approx` 並列 4 スレッド（10k） | 7.4 ms |
 | バランス木 | 31 | `approx` シード付き（10k サンプル） | 83 ms |
 
+このバランス木（n=31）は意図的に `exact_tree` ではなく `approx` でベンチマークしています：この形状のノードあたりコスト（176,020 — [docs/correctness.md](docs/correctness.md#exact-method-bounds) 参照）が `ExactTreeConfig` のデフォルト予算を超えており、実際に `exact_tree` を実行すると約20〜25秒かかります。`auto`/`auto_quality` は O(n) のプリフライトでこれを検知し、数十秒かけて実行する代わりに自動でフォールバックします。
+
 `cargo bench` で再現できます。
 
 ## 現在の制限事項
 
 - ブルートフォース exact ASV は線形拡張の数に対して指数的；n ≤ ~8 ノードでのみ実用的。
-- `exact_tree` は有根有向木（単一ルート、他の全ノードの入次数が 1）を必要とします。n ≤ 20 の一般 DAG には `exact_dag`、n ≤ 28 の疎 DAG には `exact_dag_sparse`、それより大きい DAG には `approx` を使用してください。
+- `exact_tree` は有根有向木（単一ルート、他の全ノードの入次数が 1）**かつ** ノードあたりの組み合わせコストが `ExactTreeConfig` の予算（デフォルト 50,000 / 200,000 — [docs/correctness.md](docs/correctness.md#exact-method-bounds) 参照）に収まる形状を必要とします。n が小さくても幅・深さのある木は拒否され得ます。n ≤ 20 の一般 DAG には `exact_dag`、n ≤ 28 の疎 DAG には `exact_dag_sparse`、それより大きい DAG には `approx` を使用してください。n > 64 の有根木には現状、動く厳密手法も近似手法もありません（`approximate` 自体のビットマスク上限も n ≤ 64 が条件）— これは `exact_tree` の形状ガードとは別に追跡されている既知のギャップです。
 - 組み込みの因果探索、モデル訓練、自動グラフ構築はありません。
 
 ## 他ツールとの比較
