@@ -10,7 +10,7 @@ homepage = "https://github.com/kent-tokyo/causasv"
 readme = "README.md"
 documentation = "https://docs.rs/causasv"
 keywords = ["shapley", "causal", "shap", "feature-importance", "explainability"]
-categories = ["science", "algorithms"]
+categories = ["science", "algorithms", "artificial-intelligence", "mathematics"]
 
 [package.metadata.docs.rs]
 # Exclude the python feature: PyO3 with extension-module requires a Python
