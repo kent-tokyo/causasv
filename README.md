@@ -396,7 +396,8 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 ## Graph reduction (strong d-convex hulls)
 
 Given a DAG or CPDAG and a target variable set, `strong_d_convex_hull` computes
-the *minimal* node set that preserves a causal-effect estimate after
+the *minimal* node set that, under the assumptions established in the
+referenced paper (see below), preserves a causal-effect estimate after
 marginalizing out everything else — useful for cutting a large graph down to a
 small local model before running attribution or effect estimation on it.
 

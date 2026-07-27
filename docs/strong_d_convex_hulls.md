@@ -2,9 +2,11 @@
 
 `Dag::d_convex_hull`, `Dag::strong_d_convex_hull`, and
 `Cpdag::strong_d_convex_hull` (`src/d_convex.rs`) compute the minimal node
-set that preserves a causal-effect estimate after marginalizing out every
-other variable. This document is the primary citation and scope record for
-that feature.
+set that, under the assumptions established in the paper cited below,
+preserves a causal-effect estimate after marginalizing out every other
+variable. This document is the primary citation and scope record for that
+feature — see [Scope and assumptions](#scope-and-assumptions) for exactly
+what those assumptions are.
 
 ## Citation
 
