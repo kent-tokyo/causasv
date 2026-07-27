@@ -28,6 +28,7 @@
 
 mod approx;
 mod cache;
+mod cpdag;
 mod dag_dp;
 mod dag_dp_sparse;
 mod error;
@@ -44,6 +45,7 @@ pub mod asv;
 pub mod python;
 
 pub use asv::{AsvExplainer, AsvResult, ExactTreeConfig};
+pub use cpdag::Cpdag;
 pub use dag_dp_sparse::ExactDagConfig;
 pub use error::CausasvError;
 pub use graph::{Dag, NodeId};

@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::asv::{AsvExplainer, AsvResult};
+use crate::cpdag::Cpdag as RustCpdag;
 use crate::error::CausasvError;
 use crate::graph::{Dag as RustDag, NodeId};
 use crate::numerics::normal_quantile;
@@ -345,6 +346,227 @@ impl PyCausalDAG {
         d.set_item("recommended_method", recommended)?;
         d.set_item("estimated_dense_states", dense_states)?;
         Ok(d)
+    }
+}
+
+#[pyclass(name = "CausalCPDAG")]
+pub struct PyCpdag {
+    pub(crate) inner: RustCpdag,
+}
+
+#[pymethods]
+impl PyCpdag {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: RustCpdag::new(),
+        }
+    }
+
+    /// Construct a CPDAG from directed and undirected (from, to)/(a, b) edge
+    /// tuples. Nodes are created automatically.
+    #[staticmethod]
+    #[pyo3(signature = (directed=Vec::new(), undirected=Vec::new()))]
+    fn from_edges(
+        directed: Vec<(String, String)>,
+        undirected: Vec<(String, String)>,
+    ) -> PyResult<Self> {
+        let mut inner = RustCpdag::new();
+        for (from, to) in &directed {
+            let from_id = inner.add_node(from);
+            let to_id = inner.add_node(to);
+            inner.add_directed_edge(from_id, to_id).map_err(py_err)?;
+        }
+        for (a, b) in &undirected {
+            let a_id = inner.add_node(a);
+            let b_id = inner.add_node(b);
+            inner.add_undirected_edge(a_id, b_id).map_err(py_err)?;
+        }
+        Ok(Self { inner })
+    }
+
+    /// Return all node names in insertion order.
+    fn nodes(&self) -> Vec<String> {
+        self.inner
+            .all_nodes()
+            .map(|id| self.inner.node_name(id).unwrap().to_string())
+            .collect()
+    }
+
+    /// Return all directed edges as (from, to) name pairs.
+    fn directed_edges(&self) -> Vec<(String, String)> {
+        self.inner
+            .directed_edges()
+            .map(|(from, to)| {
+                (
+                    self.inner.node_name(from).unwrap().to_string(),
+                    self.inner.node_name(to).unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Return all undirected edges as (a, b) name pairs, `a < b` by `NodeId`.
+    fn undirected_edges(&self) -> Vec<(String, String)> {
+        self.inner
+            .undirected_edges()
+            .map(|(a, b)| {
+                (
+                    self.inner.node_name(a).unwrap().to_string(),
+                    self.inner.node_name(b).unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Add a compelled (directed) edge. Nodes are created automatically.
+    fn add_directed_edge(&mut self, from_name: &str, to_name: &str) -> PyResult<()> {
+        let from = self.inner.add_node(from_name);
+        let to = self.inner.add_node(to_name);
+        self.inner.add_directed_edge(from, to).map_err(py_err)
+    }
+
+    /// Add an unresolved (undirected) edge. Nodes are created automatically.
+    fn add_undirected_edge(&mut self, a_name: &str, b_name: &str) -> PyResult<()> {
+        let a = self.inner.add_node(a_name);
+        let b = self.inner.add_node(b_name);
+        self.inner.add_undirected_edge(a, b).map_err(py_err)
+    }
+
+    /// Cheap structural validation (non-empty, no directed cycle). Does not
+    /// verify full CPDAG validity -- see `validate_cpdag`.
+    fn validate_pdag(&self) -> PyResult<()> {
+        self.inner.validate_pdag().map_err(py_err)
+    }
+
+    /// `validate_pdag` plus: a consistent DAG extension exists. Does not
+    /// verify the directed edges are exactly the compelled edges of a
+    /// genuine Markov equivalence class -- see the Rust doc comment on
+    /// `Cpdag::validate_cpdag` for the precise boundary.
+    fn validate_cpdag(&self) -> PyResult<()> {
+        self.inner.validate_cpdag().map_err(py_err)
+    }
+
+    /// Construct a consistent DAG extension (Dor-Tarsi / Chickering
+    /// PDAG-to-DAG algorithm). Raises `ValueError` if no valid extension
+    /// exists (e.g. a chordless undirected cycle).
+    fn consistent_extension(&self) -> PyResult<PyCausalDAG> {
+        let inner = self.inner.consistent_extension().map_err(py_err)?;
+        Ok(PyCausalDAG { inner })
+    }
+
+    /// Return the sub-CPDAG induced by `names`: nodes not listed are
+    /// dropped, along with every edge touching a dropped node. Edge kind
+    /// (directed/undirected) is preserved for retained pairs.
+    fn induced_subgraph(&self, names: Vec<String>) -> PyResult<PyCpdag> {
+        let ids: Vec<NodeId> = names
+            .iter()
+            .map(|name| {
+                self.inner
+                    .node_id(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("unknown node: {name}")))
+            })
+            .collect::<PyResult<_>>()?;
+        let inner = self.inner.induced_subgraph(&ids).map_err(py_err)?;
+        Ok(PyCpdag { inner })
+    }
+
+    /// Return a JSON string representing the CPDAG.
+    ///
+    /// Format: `{"nodes":["a","b"],"directed_edges":[{"from":"a","to":"b"}],"undirected_edges":[{"a":"b","b":"c"}]}`
+    fn to_json(&self) -> String {
+        let nodes: Vec<serde_json::Value> = self
+            .inner
+            .all_nodes()
+            .map(|id| serde_json::Value::from(self.inner.node_name(id).unwrap()))
+            .collect();
+        let directed: Vec<serde_json::Value> = self
+            .inner
+            .directed_edges()
+            .map(|(from, to)| {
+                serde_json::json!({
+                    "from": self.inner.node_name(from).unwrap(),
+                    "to": self.inner.node_name(to).unwrap(),
+                })
+            })
+            .collect();
+        let undirected: Vec<serde_json::Value> = self
+            .inner
+            .undirected_edges()
+            .map(|(a, b)| {
+                serde_json::json!({
+                    "a": self.inner.node_name(a).unwrap(),
+                    "b": self.inner.node_name(b).unwrap(),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "nodes": nodes,
+            "directed_edges": directed,
+            "undirected_edges": undirected,
+        })
+        .to_string()
+    }
+
+    /// Construct a CPDAG from the JSON format produced by `to_json()`.
+    ///
+    /// Accepts `{"nodes":[...],"directed_edges":[{"from":"a","to":"b"},...],"undirected_edges":[{"a":"b","b":"c"},...]}`,
+    /// parsed as structural JSON (whitespace-insensitive). Unknown keys are
+    /// ignored. Malformed JSON, or shapes not matching the above, raises
+    /// `ValueError`.
+    #[staticmethod]
+    fn from_json(s: &str) -> PyResult<Self> {
+        let value: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| PyValueError::new_err(format!("malformed JSON: {e}")))?;
+        let mut inner = RustCpdag::new();
+
+        if let Some(nodes) = value.get("nodes") {
+            let nodes = nodes.as_array().ok_or_else(|| {
+                PyValueError::new_err("malformed JSON: \"nodes\" must be an array")
+            })?;
+            for n in nodes {
+                let name = n.as_str().ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: \"nodes\" entries must be strings")
+                })?;
+                inner.add_node(name);
+            }
+        }
+
+        if let Some(edges) = value.get("directed_edges") {
+            let edges = edges.as_array().ok_or_else(|| {
+                PyValueError::new_err("malformed JSON: \"directed_edges\" must be an array")
+            })?;
+            for e in edges {
+                let from = e.get("from").and_then(|v| v.as_str()).ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: directed edge missing string \"from\"")
+                })?;
+                let to = e.get("to").and_then(|v| v.as_str()).ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: directed edge missing string \"to\"")
+                })?;
+                let from_id = inner.add_node(from);
+                let to_id = inner.add_node(to);
+                inner.add_directed_edge(from_id, to_id).map_err(py_err)?;
+            }
+        }
+
+        if let Some(edges) = value.get("undirected_edges") {
+            let edges = edges.as_array().ok_or_else(|| {
+                PyValueError::new_err("malformed JSON: \"undirected_edges\" must be an array")
+            })?;
+            for e in edges {
+                let a = e.get("a").and_then(|v| v.as_str()).ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: undirected edge missing string \"a\"")
+                })?;
+                let b = e.get("b").and_then(|v| v.as_str()).ok_or_else(|| {
+                    PyValueError::new_err("malformed JSON: undirected edge missing string \"b\"")
+                })?;
+                let a_id = inner.add_node(a);
+                let b_id = inner.add_node(b);
+                inner.add_undirected_edge(a_id, b_id).map_err(py_err)?;
+            }
+        }
+
+        Ok(Self { inner })
     }
 }
 
@@ -955,6 +1177,7 @@ impl PyASVExplainer {
 #[pymodule]
 fn causasv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCausalDAG>()?;
+    m.add_class::<PyCpdag>()?;
     m.add_class::<PyASVExplainer>()?;
     Ok(())
 }
