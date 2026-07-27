@@ -347,6 +347,51 @@ impl PyCausalDAG {
         d.set_item("estimated_dense_states", dense_states)?;
         Ok(d)
     }
+
+    /// The d-convex hull of `names`: sorted node names.
+    fn d_convex_hull(&self, names: Vec<String>) -> PyResult<Vec<String>> {
+        let ids = self.resolve_ids(&names)?;
+        let hull = self.inner.d_convex_hull(&ids).map_err(py_err)?;
+        Ok(self.sorted_names(&hull))
+    }
+
+    /// The strong d-convex hull of `names`: sorted node names. This is the
+    /// minimal set that preserves a causal-effect estimate after
+    /// marginalizing out every other variable.
+    fn strong_d_convex_hull(&self, names: Vec<String>) -> PyResult<Vec<String>> {
+        let ids = self.resolve_ids(&names)?;
+        let hull = self.inner.strong_d_convex_hull(&ids).map_err(py_err)?;
+        Ok(self.sorted_names(&hull))
+    }
+
+    /// Return the sub-DAG induced by `names`.
+    fn induced_subgraph(&self, names: Vec<String>) -> PyResult<PyCausalDAG> {
+        let ids = self.resolve_ids(&names)?;
+        let inner = self.inner.induced_subgraph(&ids).map_err(py_err)?;
+        Ok(PyCausalDAG { inner })
+    }
+}
+
+impl PyCausalDAG {
+    fn resolve_ids(&self, names: &[String]) -> PyResult<Vec<NodeId>> {
+        names
+            .iter()
+            .map(|name| {
+                self.inner
+                    .node_id(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("unknown node: {name}")))
+            })
+            .collect()
+    }
+
+    fn sorted_names(&self, ids: &indexmap::IndexSet<NodeId>) -> Vec<String> {
+        let mut names: Vec<String> = ids
+            .iter()
+            .map(|&id| self.inner.node_name(id).unwrap().to_string())
+            .collect();
+        names.sort_unstable();
+        names
+    }
 }
 
 #[pyclass(name = "CausalCPDAG")]
@@ -453,6 +498,29 @@ impl PyCpdag {
     fn consistent_extension(&self) -> PyResult<PyCausalDAG> {
         let inner = self.inner.consistent_extension().map_err(py_err)?;
         Ok(PyCausalDAG { inner })
+    }
+
+    /// The strong d-convex hull of `names`: sorted node names. Computed by
+    /// picking one consistent DAG extension and computing its strong
+    /// d-convex hull there -- sound because the paper's Theorem 5 proves
+    /// the hull's vertex set is identical across every DAG in a CPDAG's
+    /// Markov equivalence class.
+    fn strong_d_convex_hull(&self, names: Vec<String>) -> PyResult<Vec<String>> {
+        let ids: Vec<NodeId> = names
+            .iter()
+            .map(|name| {
+                self.inner
+                    .node_id(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("unknown node: {name}")))
+            })
+            .collect::<PyResult<_>>()?;
+        let hull = self.inner.strong_d_convex_hull(&ids).map_err(py_err)?;
+        let mut result: Vec<String> = hull
+            .iter()
+            .map(|&id| self.inner.node_name(id).unwrap().to_string())
+            .collect();
+        result.sort_unstable();
+        Ok(result)
     }
 
     /// Return the sub-CPDAG induced by `names`: nodes not listed are

@@ -128,6 +128,39 @@ impl Dag {
         (0..self.names.len()).map(|i| NodeId(i as u32))
     }
 
+    /// Return the sub-DAG induced by `keep`: nodes not in `keep` are dropped,
+    /// along with every edge touching a dropped node. Node order in the
+    /// result follows this graph's original insertion order, not `keep`'s
+    /// order.
+    ///
+    /// Errors with `InvalidNodeId` if `keep` contains an id not in this DAG.
+    pub fn induced_subgraph(&self, keep: &[NodeId]) -> Result<Dag, CausasvError> {
+        let mut keep_mask = vec![false; self.node_count()];
+        for &id in keep {
+            self.check_id(id)?;
+            keep_mask[id.0 as usize] = true;
+        }
+        let mut sub = Dag::new();
+        for id in self.all_nodes() {
+            if keep_mask[id.0 as usize] {
+                sub.add_node(&self.names[id.0 as usize]);
+            }
+        }
+        for from in self.all_nodes() {
+            if !keep_mask[from.0 as usize] {
+                continue;
+            }
+            for &to in &self.children[from.0 as usize] {
+                if keep_mask[to.0 as usize] {
+                    let new_from = sub.node_id(&self.names[from.0 as usize]).unwrap();
+                    let new_to = sub.node_id(&self.names[to.0 as usize]).unwrap();
+                    sub.add_edge(new_from, new_to)?;
+                }
+            }
+        }
+        Ok(sub)
+    }
+
     pub(crate) fn in_degrees(&self) -> Vec<usize> {
         self.parents.iter().map(|p| p.len()).collect()
     }
@@ -140,7 +173,7 @@ impl Dag {
         &self.parents[id.0 as usize]
     }
 
-    fn check_id(&self, id: NodeId) -> Result<(), CausasvError> {
+    pub(crate) fn check_id(&self, id: NodeId) -> Result<(), CausasvError> {
         if id.0 as usize >= self.names.len() {
             Err(CausasvError::InvalidNodeId(id))
         } else {

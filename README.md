@@ -372,6 +372,8 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 | DAG ensemble / sensitivity ASV | — | ✓ | Experimental |
 | DAG structural inspection | — | ✓ | Experimental |
 | Graph export (DOT / JSON / networkx) | — | ✓ | Experimental |
+| CPDAG representation + consistent DAG extension | ✓ | ✓ | Experimental |
+| d-convex / strong d-convex hull (graph reduction) | ✓ | ✓ | Experimental |
 
 ## Paper correspondence
 
@@ -390,6 +392,51 @@ The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (order
 - `exact_dag` implements the two-table order-ideal DP for general DAGs (n ≤ 20).
 - `approx` implements importance-weighted topological ordering sampling for any DAG.
 - `exact` is a brute-force baseline oracle used as a correctness reference in tests.
+
+## Graph reduction (strong d-convex hulls)
+
+Given a DAG or CPDAG and a target variable set, `strong_d_convex_hull` computes
+the *minimal* node set that preserves a causal-effect estimate after
+marginalizing out everything else — useful for cutting a large graph down to a
+small local model before running attribution or effect estimation on it.
+
+```rust
+use causasv::Dag;
+
+fn main() -> Result<(), causasv::CausasvError> {
+    let mut dag = Dag::new();
+    let (a, b, c) = (dag.add_node("A"), dag.add_node("B"), dag.add_node("C"));
+    dag.add_edge(a, b)?;
+    dag.add_edge(b, c)?;
+
+    let hull = dag.strong_d_convex_hull(&[a, c])?; // -> {A, B, C}
+    let reduced = dag.induced_subgraph(&hull.into_iter().collect::<Vec<_>>())?;
+    println!("{} nodes in reduced graph", reduced.node_count());
+    Ok(())
+}
+```
+
+```python
+from causasv import CausalCPDAG
+
+cpdag = CausalCPDAG.from_edges(directed=[("A", "B")], undirected=[("B", "C")])
+hull = cpdag.strong_d_convex_hull(["A", "C"])       # -> ["A", "B", "C"]
+reduced = cpdag.induced_subgraph(hull)
+```
+
+`Cpdag::strong_d_convex_hull` works on a caller-supplied CPDAG (e.g. the output
+of an external structure-learning method — causasv does not perform causal
+discovery) by picking one consistent DAG extension and computing the hull
+there; this is sound because the underlying paper's invariance theorem proves
+the result is identical across every DAG in the CPDAG's Markov equivalence
+class.
+
+This is an independent implementation based on the mathematical definitions
+and algorithms in Deng, Sun, Li & Liu (2026) — full citation, assumptions, and
+scope limits (in particular: proven only for non-adjacent target-variable
+pairs) are in [docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md).
+IDA-based causal effect estimation on the reduced graph is not implemented —
+this only performs the graph reduction itself.
 
 ## Performance
 
@@ -427,6 +474,7 @@ Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
 - `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1) **and** a shape whose per-node combinatorial cost fits `ExactTreeConfig`'s budget (default 50,000 / 200,000 — see [docs/correctness.md](docs/correctness.md#exact-method-bounds)); a small-n but wide/deep tree can still be rejected. For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, use `approx`. A rooted tree with n > 64 currently has no working exact *or* approximate method (`approximate`'s own bitmask cap also requires n ≤ 64) — tracked separately from the `exact_tree` shape guard.
 - Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
 - No built-in causal discovery, model training, or automatic graph construction.
+- `strong_d_convex_hull`'s collapsibility guarantee is proven (by the paper it implements) only for non-adjacent target-variable pairs under Gaussian/multinomial, positive, faithful distributions — see [docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md#scope-and-assumptions). No IDA/effect-estimation API is implemented on top of the reduced graph yet.
 
 ## Compared to other tools
 
@@ -474,6 +522,15 @@ python -m pytest tests/
 For the asymmetric formulation and efficient tree computation, see the paper that inspired this library:
 
 > Beyond Shapley: Efficient Computation of Asymmetric Shapley Values
+
+For the strong d-convex hull graph reduction (see [Graph reduction](#graph-reduction-strong-d-convex-hulls) above):
+
+> Yuxin Deng, Yi Sun, Zhiming Li, and Huaxiong Liu. "Estimate Collapsibility of Causal Effects in Completed Partial DAGs via Strong d-Convex Hulls." arXiv:2606.08941, 2026. DOI: [10.48550/arXiv.2606.08941](https://doi.org/10.48550/arXiv.2606.08941). Licensed CC BY 4.0.
+
+`causasv`'s `d_convex.rs` module is an independent implementation of this
+paper's algorithms — not affiliated with or endorsed by its authors, and no
+code was consulted from the paper's own reference implementation. See
+[docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md) for details.
 
 ## License
 

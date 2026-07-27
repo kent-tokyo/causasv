@@ -74,4 +74,13 @@ pub enum CausasvError {
         "PDAG has no consistent DAG extension (undirected edges can't be oriented without creating a cycle or a new v-structure)"
     )]
     NotExtendable,
+    /// `Dag::d_convex_hull`/`Dag::strong_d_convex_hull` didn't reach a fixed
+    /// point within `node_count() + 1` iterations. The paper's own
+    /// termination proof bounds both loops at `|V|` iterations for any valid
+    /// DAG, so this indicates an implementation bug, not a legitimate
+    /// large-graph timeout — please file an issue with a reproduction.
+    #[error(
+        "d-convex hull computation did not reach a fixed point within the expected iteration bound; this indicates an implementation bug"
+    )]
+    HullFixedPointNotReached,
 }

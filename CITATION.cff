@@ -12,3 +12,19 @@ references:
   - type: article
     title: "Beyond Shapley: Efficient Computation of Asymmetric Shapley Values"
     notes: "The paper that inspired this library"
+  - type: article
+    title: "Estimate Collapsibility of Causal Effects in Completed Partial DAGs via Strong d-Convex Hulls"
+    authors:
+      - given-names: Yuxin
+        family-names: Deng
+      - given-names: Yi
+        family-names: Sun
+      - given-names: Zhiming
+        family-names: Li
+      - given-names: Huaxiong
+        family-names: Liu
+    year: 2026
+    doi: "10.48550/arXiv.2606.08941"
+    url: "https://arxiv.org/abs/2606.08941"
+    license: "CC-BY-4.0"
+    notes: "Theoretical basis for the strong d-convex hull graph-reduction feature (src/d_convex.rs); independent implementation, not affiliated with or endorsed by the authors"
