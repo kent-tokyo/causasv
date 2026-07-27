@@ -12,8 +12,9 @@
 //! extension algorithm (Dor & Tarsi, *"A simple algorithm to construct a
 //! consistent extension,"* 1992; formalized as Algorithm 2 in Chickering,
 //! *"Learning Equivalence Classes of Bayesian-Network Structures,"* JMLR
-//! 2002). This is 30-year-old, public-domain graph theory implemented
-//! directly from its published description — unrelated to (and predating)
+//! 2002). This is an independent Rust implementation of that well-established,
+//! 30-year-old algorithm, written directly from its published description —
+//! no third-party source code was copied — and is unrelated to (and predates)
 //! any paper-specific licensing concerns that apply to later CPDAG-reduction
 //! work built on top of this type.
 
