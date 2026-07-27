@@ -41,3 +41,7 @@ python = ["dep:pyo3"]
 [[bench]]
 name = "asv_bench"
 harness = false
+
+[[bench]]
+name = "d_convex_bench"
+harness = false
