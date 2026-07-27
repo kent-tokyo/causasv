@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1e54014fb42a6e2fa7122768e8d84726a5c2b9abae79b38a347ef4b3f92e39d6 # shrinks to (cpdag, n) = (Cpdag { name_to_id: {"n0": NodeId(0), "n1": NodeId(1), "n2": NodeId(2)}, names: ["n0", "n1", "n2"], directed_children: [[NodeId(2)], [NodeId(2)], []], directed_parents: [[], [], [NodeId(0), NodeId(1)]], undirected: [[], [], []] }, 3)
+cc b60a0490de2b7fef27633de2184d3b398f3e360944649ce6e559da8c6f409ebd # shrinks to (cpdag, _n) = (Cpdag { name_to_id: {"n0": NodeId(0), "n1": NodeId(1), "n2": NodeId(2)}, names: ["n0", "n1", "n2"], directed_children: [[NodeId(2)], [NodeId(2)], []], directed_parents: [[], [], [NodeId(0), NodeId(1)]], undirected: [[], [], []] }, 3)
+cc b0e0630698daefdf15369655c050812c9ed0fab1a0d6035cdd84ab09bffd3281 # shrinks to (cpdag, _n) = (Cpdag { name_to_id: {"n0": NodeId(0), "n1": NodeId(1), "n2": NodeId(2)}, names: ["n0", "n1", "n2"], directed_children: [[NodeId(2)], [NodeId(2)], []], directed_parents: [[], [], [NodeId(0), NodeId(1)]], undirected: [[], [], []] }, 3)

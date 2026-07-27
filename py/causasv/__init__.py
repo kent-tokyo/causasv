@@ -1,4 +1,4 @@
-from .causasv import ASVExplainer, CausalDAG
+from .causasv import ASVExplainer, CausalCPDAG, CausalDAG
 from .helpers import (
     ASVEnsembleExplainer,
     TabularExplainer,
@@ -10,6 +10,7 @@ from .helpers import (
 
 __all__ = [
     "CausalDAG",
+    "CausalCPDAG",
     "ASVExplainer",
     "ASVEnsembleExplainer",
     "TabularExplainer",
