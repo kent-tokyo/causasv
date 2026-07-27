@@ -5,6 +5,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.7] — 2026-07-27
+
+### Changed
+- crates.io `categories` gains `artificial-intelligence` and `mathematics` (alongside existing `science`, `algorithms`) for discoverability.
+- PyPI `classifiers` gains `Topic :: Scientific/Engineering :: Mathematics` alongside the existing `Artificial Intelligence` topic.
+- Crate-level doc comment (`src/lib.rs`, shown on docs.rs) now mentions causal feature attribution, XAI, and SHAP-style feature importance, matching the README's framing.
+
+### CI
+- Linux aarch64 wheel cross-build removed from the release matrix; it fails under QEMU inside the manylinux container regardless of `docker/setup-qemu-action`. `release.yml` gained a `workflow_dispatch` trigger for manual reruns.
+
 ## [0.8.6] — 2026-07-27
 
 ### Added
