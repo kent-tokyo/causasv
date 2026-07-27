@@ -14,13 +14,58 @@ use crate::error::CausasvError;
 use crate::graph::{Dag, NodeId};
 use crate::sampler::{AdaptiveSamplingConfig, SamplingConfig};
 use crate::topo::enumerate_topos;
-use crate::tree::tree_exact_asv;
+use crate::tree::{estimate_tree_exact_cost, find_rooted_tree_root, tree_exact_asv};
 
 /// Order-ideal budget for the `auto`/`auto_quality` sparse preflight in the n > 28
 /// range: a performance-oriented cap well below the memory guard's actual ceiling,
 /// chosen so exact computation isn't attempted when it would take unreasonably long
 /// even though it might still fit in memory.
 const SPARSE_PREFLIGHT_BUDGET: usize = 250_000;
+
+/// Configuration for `exact_tree`'s combinatorial-cost preflight.
+///
+/// `exact_tree`'s cost is not simply a function of node count `n` the way
+/// `exact_dag`/`exact_dag_sparse`'s are (those cap `n` directly) — it depends on
+/// the tree's *shape*: a node's cost is the product of every ancestor level's
+/// side-sibling order-ideal count, so `enumerate_order_ideals` can be forced to
+/// materialize an enormous cartesian product even at a modest total node count.
+/// A rooted tree with branching factor ≥4 and subtree depth ≥3 at some level
+/// can reach ~8×10¹⁰ combinations at n≈61 (see
+/// [issue #36](https://github.com/kent-tokyo/causasv/issues/36)) — but even an
+/// ordinary-looking complete binary tree of height 4 (n=31, no unusual
+/// branching) reaches 176,020 at its deepest leaf, past this config's default
+/// budget, and takes ~20-25s to actually run for real. This budgets that cost
+/// analytically (see
+/// [`TreeExactCostEstimate`](crate::tree::TreeExactCostEstimate)) before any
+/// such `Vec` is ever allocated, rather than discovering it via a hang or OOM.
+#[derive(Debug, Clone, Copy)]
+pub struct ExactTreeConfig {
+    /// Reject if any single node's per-node combination count -- the product of
+    /// every ancestor level's side-sibling order-ideal count from the root down
+    /// to that node -- would exceed this many tuples. Default: 50,000.
+    pub max_cartesian_terms: u64,
+    /// Reject if the estimated total work, summed over every node in the tree,
+    /// would exceed this many tuples. Default: 200,000.
+    pub max_total_terms: u64,
+}
+
+impl Default for ExactTreeConfig {
+    fn default() -> Self {
+        // Calibrated against measured exact_tree wall-clock time (release build),
+        // not just term counts: a balanced binary tree of height 4 (n=31) has only
+        // ~3.6M estimated total terms -- comfortably under a naively-chosen
+        // 10,000,000 budget -- yet takes ~20-25s to actually run, because
+        // per-combination cost (sort + DFS + hash lookups) does not stay O(1) as
+        // combinations grow. 200,000 total terms keeps exact_tree in the
+        // sub-second range; anything bushier should fall back to
+        // exact_dag_sparse/approx rather than silently running for tens of
+        // seconds. See issue #36.
+        Self {
+            max_cartesian_terms: 50_000,
+            max_total_terms: 200_000,
+        }
+    }
+}
 
 /// Result of an ASV computation.
 #[derive(Debug)]
@@ -253,13 +298,50 @@ impl AsvExplainer {
         )
     }
 
-    /// Exact ASV for rooted directed trees. Returns Err(NotRootedTree) if the graph is not one.
-    /// Validates tree structure before computing; otherwise identical to `exact`.
+    /// Exact ASV for rooted directed trees, using the default `ExactTreeConfig`
+    /// feasibility budget. Returns `Err(NotRootedTree)` if the graph is not one,
+    /// or `Err(ExactTreeBudgetExceeded)` if the tree's shape (not just its node
+    /// count) would force an infeasible cartesian-product materialization —
+    /// see `exact_tree_with_config`.
     pub fn exact_tree<F>(&self, value_fn: F) -> Result<AsvResult, CausasvError>
     where
         F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
     {
+        self.exact_tree_with_config(value_fn, &ExactTreeConfig::default())
+    }
+
+    /// Like `exact_tree` but with a custom `ExactTreeConfig` feasibility budget.
+    ///
+    /// Runs a cheap, O(n) analytical cost estimate (no order ideal is ever
+    /// enumerated) before doing any real work: a rooted tree with wide,
+    /// deeply-branching subtrees can force `tree_exact_asv`'s cartesian-product
+    /// step to materialize hundreds of millions of tuples even at a modest node
+    /// count, which would hang and eventually exhaust memory rather than error.
+    /// This preflight makes that infeasibility a structured `Err` instead.
+    pub fn exact_tree_with_config<F>(
+        &self,
+        value_fn: F,
+        config: &ExactTreeConfig,
+    ) -> Result<AsvResult, CausasvError>
+    where
+        F: Fn(&[NodeId]) -> Result<f64, CausasvError>,
+    {
         self.dag.validate()?;
+        let root = find_rooted_tree_root(&self.dag)?;
+        let estimate = estimate_tree_exact_cost(
+            &self.dag,
+            root,
+            config.max_cartesian_terms,
+            config.max_total_terms,
+        );
+        if !estimate.feasible {
+            return Err(CausasvError::ExactTreeBudgetExceeded {
+                max_cartesian_terms: estimate.max_cartesian_terms,
+                cartesian_term_budget: estimate.cartesian_term_budget,
+                estimated_total_terms: estimate.estimated_total_terms,
+                total_term_budget: estimate.total_term_budget,
+            });
+        }
         tree_exact_asv(&self.dag, value_fn)
     }
 
@@ -331,8 +413,60 @@ impl AsvExplainer {
             r.method_used = Some("exact");
             Ok(r)
         } else if self.is_rooted_tree {
-            let mut r = self.exact_tree(value_fn)?;
-            r.method_used = Some("exact_tree");
+            let vfn = &value_fn;
+            match self.exact_tree_with_config(|c| vfn(c), &ExactTreeConfig::default()) {
+                Ok(mut r) => {
+                    r.method_used = Some("exact_tree");
+                    return Ok(r);
+                }
+                // ExactTreeBudgetExceeded: this tree's *shape* (wide, deeply-branching
+                // subtrees), not just its size, makes exact_tree's cartesian-product
+                // step infeasible. InvalidConfig here can only be exact_tree's own
+                // n>64 bitmask limit (is_rooted_tree is already true and the DAG is
+                // already validated) — previously that propagated straight out of
+                // auto() as an error instead of falling back like every other branch.
+                Err(CausasvError::ExactTreeBudgetExceeded { .. })
+                | Err(CausasvError::InvalidConfig(_)) => {}
+                Err(e) => return Err(e),
+            }
+            // exact_tree's specialized DP can't handle this tree; the general sparse
+            // DAG DP doesn't share that failure mode (it BFS-enumerates order ideals
+            // directly, bounded by its own state budget, rather than materializing a
+            // per-ancestor-level cartesian product), so it's tried next.
+            //
+            // Uses SPARSE_PREFLIGHT_BUDGET (250k), not sparse_state_budget's full
+            // ~26.8M-state memory-guard ceiling: unlike the n<=28 branch (where the
+            // total state space is capped at 2^28 regardless), a tree already known
+            // to be cartesian-product-infeasible can easily have hundreds of millions
+            // of order ideals, and walking a bounded BFS up to 26.8M of them before
+            // giving up is itself too slow to be a "cheap" preflight.
+            if n <= 63
+                && estimate_sparse_feasible(&self.dag, &self.parents_mask, SPARSE_PREFLIGHT_BUDGET)
+            {
+                let sparse_cfg = ExactDagConfig {
+                    max_nodes: n,
+                    ..ExactDagConfig::default()
+                };
+                match self.exact_dag_sparse_with_config(|c| vfn(c), &sparse_cfg) {
+                    Ok(mut r) => {
+                        r.fallback_from = Some("exact_tree".to_string());
+                        r.fallback_reason =
+                            Some("tree shape exceeded exact_tree's feasibility budget".to_string());
+                        r.method_used = Some("exact_dag_sparse");
+                        return Ok(r);
+                    }
+                    Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            let mut r = self.approximate(value_fn, config)?;
+            r.fallback_from = Some("exact_tree".to_string());
+            r.fallback_reason = Some(
+                "tree shape exceeded exact_tree's feasibility budget; exact_dag_sparse also \
+                 infeasible for this DAG"
+                    .to_string(),
+            );
+            r.method_used = Some("approx");
             Ok(r)
         } else if n <= 20 {
             let sparse_cfg = ExactDagConfig::default();
@@ -467,9 +601,66 @@ impl AsvExplainer {
             r.method_used = Some("exact");
             Ok(r)
         } else if self.is_rooted_tree {
-            let mut r = self.exact_tree(value_fn)?;
-            r.method_used = Some("exact_tree");
-            Ok(r)
+            let vfn = &value_fn;
+            match self.exact_tree_with_config(|c| vfn(c), &ExactTreeConfig::default()) {
+                Ok(mut r) => {
+                    r.method_used = Some("exact_tree");
+                    return Ok(r);
+                }
+                // See auto()'s identical branch: ExactTreeBudgetExceeded is a shape
+                // rejection, InvalidConfig here can only be the n>64 bitmask limit.
+                Err(CausasvError::ExactTreeBudgetExceeded { .. })
+                | Err(CausasvError::InvalidConfig(_)) => {}
+                Err(e) => return Err(e),
+            }
+            if n <= 63 {
+                // See auto()'s identical fallback tier for why this uses
+                // SPARSE_PREFLIGHT_BUDGET rather than sparse_state_budget's full
+                // ~26.8M-state ceiling.
+                if estimate_sparse_feasible(&self.dag, &self.parents_mask, SPARSE_PREFLIGHT_BUDGET)
+                {
+                    let sparse_cfg = ExactDagConfig {
+                        max_nodes: n,
+                        ..ExactDagConfig::default()
+                    };
+                    match self.exact_dag_sparse_with_config(|c| vfn(c), &sparse_cfg) {
+                        Ok(mut r) => {
+                            r.fallback_from = Some("exact_tree".to_string());
+                            r.fallback_reason = Some(
+                                "tree shape exceeded exact_tree's feasibility budget".to_string(),
+                            );
+                            r.method_used = Some("exact_dag_sparse");
+                            return Ok(r);
+                        }
+                        Err(CausasvError::InvalidConfig(_)) | Err(CausasvError::Overflow(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                // Deliberately skip approximate_uniform_sparse_adaptive here, unlike
+                // the sibling n<=63 branch below: its internal memo is itself
+                // unbounded, and this is exactly the "dangerous shape" (a bushy tree
+                // that already blew both exact_tree's and exact_dag_sparse's
+                // budgets) where that memo could also blow up. Go straight to the
+                // memo-free approximate_adaptive until uniform_sparse_adaptive has
+                // its own state budget.
+                let mut r = self.approximate_adaptive(value_fn, config)?;
+                r.fallback_from = Some("exact_tree".to_string());
+                r.fallback_reason = Some(
+                    "tree shape exceeded exact_tree's feasibility budget; exact_dag_sparse also \
+                     infeasible for this DAG"
+                        .to_string(),
+                );
+                r.method_used = Some("approx_adaptive");
+                Ok(r)
+            } else {
+                let mut r = self.approximate_adaptive(value_fn, config)?;
+                r.fallback_from = Some("exact_tree".to_string());
+                r.fallback_reason = Some(
+                    "tree shape exceeded exact_tree's feasibility budget (n > 63)".to_string(),
+                );
+                r.method_used = Some("approx_adaptive");
+                Ok(r)
+            }
         } else if n <= 20 {
             let sparse_cfg = ExactDagConfig::default();
             // See auto()'s n<=20 branch: order-ideal preflight (budgeted at half the

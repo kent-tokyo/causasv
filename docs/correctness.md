@@ -90,10 +90,28 @@ Before trusting an approximate result:
 | Method | n limit | States visited | Notes |
 |--------|---------|----------------|-------|
 | `exact` | ~8 | All L(G) orderings | Exponential in L(G); use only for small graphs |
-| `exact_tree` | unlimited | n+1 order ideals | Only for rooted directed trees |
+| `exact_tree` | shape-dependent | up to `ExactTreeConfig` budget | Only for rooted directed trees — see below |
 | `exact_dag` | 20 | 2ⁿ bitmasks | O(2ⁿ × n) time; ~16 MB for n=20 |
 | `exact_dag_sparse` | 28 | ≤ 2ⁿ order ideals (BFS) | Much faster for sparse DAGs; memory-bounded (default 2 GiB) |
 
 `auto()` selects the method automatically and reports what it chose in
 `info["selected_method"]`. If `exact_dag_sparse` hits the memory or overflow
 limit, it falls back to `approx` and sets `info["fallback_from"]`.
+
+**`exact_tree`'s cost is shape-dependent, not just a function of node count.**
+A node's cost is the product of every ancestor level's side-sibling order-ideal
+count, so a tree with several wide/deep branches can reach billions of
+combinations at a modest `n` (a 61-node tree from a real report — see
+[issue #36](https://github.com/kent-tokyo/causasv/issues/36) — hit ~8×10¹⁰).
+Before calling `enumerate_order_ideals`, `exact_tree_with_config` runs an O(n),
+allocation-free cost estimate (`estimate_tree_exact_cost`) and rejects with
+`ExactTreeBudgetExceeded` if either the largest single node's cost or the total
+summed over the tree exceeds the configured `ExactTreeConfig` budget (default:
+50,000 / 200,000 — calibrated against measured wall-clock time, since
+per-combination cost does not stay O(1) as combinations grow: a 31-node
+balanced binary tree has "only" ~3.6M estimated total terms but takes ~20-25s
+to actually run). `auto()`/`auto_quality()` fall back through
+`exact_dag_sparse` and then `approximate`/`approximate_adaptive` when
+`exact_tree` rejects a shape — never `approximate_uniform_sparse_adaptive` for
+this fallback specifically, since its own internal memo has no comparable
+budget yet and could grow unbounded on the same "dangerous" shape.

@@ -41,4 +41,22 @@ pub enum CausasvError {
     /// computation; callers should fall back to an approximate method.
     #[error("linear extension count overflowed u64: {0}")]
     Overflow(String),
+    /// `exact_tree`'s feasibility preflight rejected this tree's *shape* (not just
+    /// its node count): some ancestor level's side-sibling order-ideal product, or
+    /// the total work summed across the whole tree, exceeds the configured
+    /// `ExactTreeConfig` budget. Raised before any cartesian product is built —
+    /// unlike a node-count limit, this catches wide/deep ("bushy") trees that are
+    /// small in `n` but combinatorially explosive to enumerate. Callers should
+    /// fall back to `exact_dag_sparse` or an approximate method.
+    #[error(
+        "exact_tree: tree shape exceeds the feasibility budget (largest single side-sibling \
+         product {max_cartesian_terms} vs budget {cartesian_term_budget}; estimated total work \
+         {estimated_total_terms} vs budget {total_term_budget}); use exact_dag_sparse or approx"
+    )]
+    ExactTreeBudgetExceeded {
+        max_cartesian_terms: u64,
+        cartesian_term_budget: u64,
+        estimated_total_terms: u64,
+        total_term_budget: u64,
+    },
 }

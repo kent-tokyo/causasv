@@ -19,7 +19,16 @@ Reproduce: `cargo bench` from the repository root.
 | Caterpillar | 10 | `exact_tree` (DP) | 169 µs |
 
 For n ≤ ~8, `exact` is faster than `exact_tree` due to lower allocation overhead.
-`exact_tree` becomes the only feasible exact method at n ≥ 10.
+For rooted trees at n ≥ 10, brute-force `exact` is no longer practical, making
+`exact_tree` the only exact method worth considering — but `exact_tree`'s own
+feasibility is shape-dependent, not just a function of n: its cost is the
+product of every ancestor level's side-sibling order-ideal count, so a rooted
+tree can be rejected by `ExactTreeConfig`'s default budget (50,000 / 200,000)
+even at a small or moderate n if it branches widely and deeply enough. A
+complete binary tree of height 4 (n=31, no unusual branching) is already
+rejected — its deepest leaf reaches 176,020 combinations and takes ~20-25s to
+actually run. See [correctness.md](correctness.md#exact-method-bounds) and
+[issue #36](https://github.com/kent-tokyo/causasv/issues/36).
 
 ### exact_dag (dense order-ideal DP, O(2^n × n))
 
