@@ -258,12 +258,14 @@ values = explainer.explain_instance(X_test[0], method="auto")
 | 方法 | 适用场景 | API |
 |------|---------|-----|
 | `exact` | 小型 DAG（n ≤ ~8）；枚举所有线性扩展 | `explainer.exact(value_fn)` |
-| `exact_tree` | 有根有向树；顺序理想 DP | `explainer.exact_tree(value_fn)` |
+| `exact_tree` | 有根有向树；顺序理想 DP；超出成本预算的茂密形状会被拒绝（见下文） | `explainer.exact_tree(value_fn)` / `explainer.exact_tree_with_config(value_fn, &config)` |
 | `exact_dag` | 一般 DAG，n ≤ 20；密集顺序理想 DP | `explainer.exact_dag(value_fn)` |
 | `exact_dag_sparse` | 稀疏 DAG，n ≤ 28；仅对有效顺序理想 BFS | `explainer.exact_dag_sparse(value_fn)` |
 | `approx` | 任意 DAG（n > 28 或超出内存限制）；IS 采样 | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` 调度：n ≤ 8 → `exact`；有根树 → `exact_tree`；n ≤ 20 → 若 edge_count ≤ 2n 则 `exact_dag_sparse` 否则 `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 若顺序理想数 ≤ 250k（稀疏预检）则 `exact_dag_sparse` 否则 `approx`；n > 63 → `approx`。
+`auto` 调度：n ≤ 8 → `exact`；有根树 → 若形状符合 `ExactTreeConfig` 的成本预算则 `exact_tree`，否则若可行（n ≤ 63 且顺序理想数 ≤ 250k 预检）则 `exact_dag_sparse`，否则 `approx`；n ≤ 20 → 若顺序理想数不超过密集状态数的一半则 `exact_dag_sparse` 否则 `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 若顺序理想数 ≤ 250k（稀疏预检）则 `exact_dag_sparse` 否则 `approx`；n > 63 → `approx`。
+
+`exact_tree` 的成本不仅取决于节点数 n，还取决于树的*形状*：一个拥有多个宽/深兄弟子树的节点会产生巨大的笛卡尔积。`exact_tree`（以及 `auto`/`auto_quality`）会在实际枚举前运行 O(n) 的预检（`ExactTreeConfig`，默认预算为单节点 50,000 项/总计 200,000 项），超出预算时返回 `ExactTreeBudgetExceeded` 或回退，而不是真的去枚举。完整说明见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)，触发该修复的具体案例见 [issue #36](https://github.com/kent-tokyo/causasv/issues/36)。
 
 `exact_dag_sparse` 只访问有效顺序理想（所有节点的父节点也存在的集合）。对于稀疏 DAG，这可能比 2^n 少几个数量级，返回 `n_order_ideals`、`state_ratio` 和 `memory_mb` 诊断信息。
 
@@ -271,14 +273,14 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 ## 状态
 
-实验性 — v0.8.5。在 v1.0 之前公共 API 可能会发生变化。
+实验性 — v0.8.6。在 v1.0 之前公共 API 可能会发生变化。
 
 ## 算法状态
 
 | 方法 | 实现 | 备注 |
 |------|------|------|
 | `exact` | 枚举所有线性扩展 | 参考 oracle；实用范围 n ≤ ~8 |
-| `exact_tree` | 有根树验证 + 顺序理想 DP | 高效；使用钩子长度公式 |
+| `exact_tree` | 有根树验证 + 顺序理想 DP + 成本预算预检 | 高效；使用钩子长度公式；超出 `ExactTreeConfig` 预算的形状会被拒绝而非挂起 |
 | `exact_dag` | 2^n 状态上的顺序理想 DP | 一般 DAG，n ≤ 20；O(2^n × n) |
 | `exact_dag_sparse` | 有效顺序理想 BFS + 懒惰 dp_ind | 稀疏 DAG，n ≤ 28；内存有界 |
 | `approx` | 拓扑排序上的自归一化 IS | 任意 DAG；校正前沿采样器偏差 |
@@ -334,12 +336,14 @@ Apple M 系列（arm64，release 构建）部分结果。`v(S) = |S|`。完整�
 | 链式 | 20 | `approx` 并行 4 线程（10k） | 7.4 ms |
 | 平衡树 | 31 | `approx` 种子（10k 采样） | 83 ms |
 
+这棵 n=31 的平衡树刻意使用 `approx` 而非 `exact_tree` 进行基准测试：该形状的单节点成本（176,020 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）超出了 `ExactTreeConfig` 的默认预算，实际运行 `exact_tree` 需要约 20-25 秒。`auto`/`auto_quality` 通过 O(n) 预检自动识别这一点并回退，而不会真的运行数十秒。
+
 使用 `cargo bench` 重现结果。
 
 ## 当前限制
 
 - 暴力精确 ASV 对线性扩展数量呈指数级增长；仅适用于 n ≤ ~8 的节点。
-- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1）。n ≤ 20 的一般 DAG 使用 `exact_dag`，n ≤ 28 的稀疏 DAG 使用 `exact_dag_sparse`，更大的 DAG 使用 `approx`。
+- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1），**并且**其单节点组合成本需符合 `ExactTreeConfig` 的预算（默认 50,000 / 200,000 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）；n 较小但宽/深的树仍可能被拒绝。n ≤ 20 的一般 DAG 使用 `exact_dag`，n ≤ 28 的稀疏 DAG 使用 `exact_dag_sparse`，更大的 DAG 使用 `approx`。n > 64 的有根树目前没有可用的精确或近似方法（`approximate` 自身的位掩码上限同样要求 n ≤ 64）——这是与 `exact_tree` 形状保护机制分开跟踪的已知缺口。
 - 没有内置的因果发现、模型训练或自动图构建。
 
 ## 与其他工具的比较
