@@ -296,13 +296,22 @@ values = ASVExplainer(dag).explain(value_fn, method="auto")
 | Method | When to use | API |
 |--------|-------------|-----|
 | `exact` | Small DAGs (n ≤ ~8); enumerates all linear extensions | `explainer.exact(value_fn)` |
-| `exact_tree` | Rooted directed trees; order-ideal DP | `explainer.exact_tree(value_fn)` |
+| `exact_tree` | Rooted directed trees; order-ideal DP; rejects bushy shapes past a cost budget (see below) | `explainer.exact_tree(value_fn)` / `explainer.exact_tree_with_config(value_fn, &config)` |
 | `exact_dag` | General DAGs, n ≤ 20; dense order-ideal DP | `explainer.exact_dag(value_fn)` |
 | `exact_dag_sparse` | Sparse DAGs, n ≤ 63; BFS over valid order ideals only | `explainer.exact_dag_sparse(value_fn)` |
 | `uniform_sparse` | Sparse DAGs, n ≤ 63; zero-variance uniform sampling (ESS = n_samples) | `explainer.approximate_uniform_sparse(value_fn, cfg)` |
 | `approx` | Any DAG; IS-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
 
-`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree`; n ≤ 20 → `exact_dag_sparse` if edge_count ≤ 2n else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; 28 < n ≤ 63 → `exact_dag_sparse` if order ideals ≤ 250k (sparse preflight), else `approx`; n > 63 → `approx`.
+`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree` if its shape fits `ExactTreeConfig`'s cost budget, else `exact_dag_sparse` if that's feasible (n ≤ 63, order ideals ≤ 250k preflight), else `approx`; n ≤ 20 → `exact_dag_sparse` if order ideals fit half the dense state count else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; 28 < n ≤ 63 → `exact_dag_sparse` if order ideals ≤ 250k (sparse preflight), else `approx`; n > 63 → `approx`.
+
+`exact_tree`'s cost depends on tree *shape*, not just n: a node with several
+wide/deep sibling subtrees forces a large cartesian product. `exact_tree`
+(and `auto`/`auto_quality`) run an O(n) preflight (`ExactTreeConfig`, default
+budget 50,000 single-node terms / 200,000 total terms) and return
+`ExactTreeBudgetExceeded` — or fall back — rather than materializing it. See
+[docs/correctness.md](docs/correctness.md#exact-method-bounds) for the full
+explanation and [issue #36](https://github.com/kent-tokyo/causasv/issues/36)
+for the motivating case.
 
 `exact_dag_sparse` visits only valid order ideals (sets where every node's parents are also present). For sparse DAGs (chains, trees, few branching points), this can be orders of magnitude fewer states than 2^n. Returns `n_order_ideals`, `state_ratio`, and `memory_mb` diagnostics.
 
@@ -319,7 +328,7 @@ See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretat
 
 **Choosing between `auto` and `auto_quality`:**
 - Use `auto` for exploratory work where CI is not required — it dispatches to exact methods when feasible and IS-weighted approximation otherwise.
-- Use `auto_quality` (or `explain_quality()` in Python) when you need confidence intervals or a guaranteed ESS = n_samples on approximate paths. Every code path returns `stderr`; the approximate fallback is uniform sparse adaptive (not IS-weighted), so ESS is always equal to n_samples.
+- Use `auto_quality` (or `explain_quality()` in Python) when you need confidence intervals or a guaranteed ESS = n_samples on approximate paths. Every code path returns `stderr`; most approximate fallbacks are uniform sparse adaptive (not IS-weighted), so ESS is usually equal to n_samples — except when falling back from a rooted tree whose `exact_tree` shape was rejected (see above), which goes straight to IS-weighted adaptive sampling instead, since uniform sparse adaptive's own memo has no comparable cost budget yet.
 
 See [docs/benchmark_corpus.md](docs/benchmark_corpus.md) for measured runtime and method selection across 8 canonical DAGs.
 See [docs/comparison_shap.md](docs/comparison_shap.md) for a quantitative runtime and attribution comparison against SHAP KernelExplainer.
@@ -333,7 +342,7 @@ Experimental — v0.8.6. Public API may change before v1.0.
 | Method | Implementation | Notes |
 |--------|---------------|-------|
 | `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
-| `exact_tree` | Rooted tree validation + order-ideal DP | Efficient for trees; hook-length formula |
+| `exact_tree` | Rooted tree validation + order-ideal DP + cost-budget preflight | Efficient for trees; hook-length formula; rejects shapes past `ExactTreeConfig`'s budget instead of hanging |
 | `exact_dag` | Order-ideal DP over 2^n states | General DAGs, n ≤ 20; O(2^n × n) |
 | `exact_dag_sparse` | BFS over valid order ideals + lazy dp_ind | Sparse DAGs, n ≤ 63; memory-bounded |
 | `uniform_sparse` | Lazy dp_ind HashMap uniform sampler | Sparse DAGs n ≤ 63; ESS = n_samples exactly |
@@ -403,12 +412,19 @@ Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [do
 | Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
 | Balanced tree | 31 | `approx` seeded (10k samples) | 83 ms |
 
+This balanced tree at n=31 is deliberately benchmarked via `approx`, not
+`exact_tree`: its shape's per-node cost (176,020 — see
+[docs/correctness.md](docs/correctness.md#exact-method-bounds)) exceeds
+`ExactTreeConfig`'s default budget, and a real `exact_tree` run on it takes
+~20-25s. `auto`/`auto_quality` detect this via the O(n) preflight and fall
+back automatically instead of running it.
+
 Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
 
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
-- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1). For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, use `approx`.
+- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1) **and** a shape whose per-node combinatorial cost fits `ExactTreeConfig`'s budget (default 50,000 / 200,000 — see [docs/correctness.md](docs/correctness.md#exact-method-bounds)); a small-n but wide/deep tree can still be rejected. For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, use `approx`. A rooted tree with n > 64 currently has no working exact *or* approximate method (`approximate`'s own bitmask cap also requires n ≤ 64) — tracked separately from the `exact_tree` shape guard.
 - Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
 - No built-in causal discovery, model training, or automatic graph construction.
 

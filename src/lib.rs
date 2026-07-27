@@ -42,7 +42,7 @@ pub mod asv;
 #[cfg(feature = "python")]
 pub mod python;
 
-pub use asv::{AsvExplainer, AsvResult};
+pub use asv::{AsvExplainer, AsvResult, ExactTreeConfig};
 pub use dag_dp_sparse::ExactDagConfig;
 pub use error::CausasvError;
 pub use graph::{Dag, NodeId};
