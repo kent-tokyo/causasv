@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Fast Causal Asymmetric Shapley Values for DAGs.
+//! Causal feature attribution via Asymmetric Shapley Values (ASV) over DAGs,
+//! for explainable AI (XAI) / SHAP-style feature importance with Rust + Python bindings.
 //!
 //! # Quick Start
 //!
