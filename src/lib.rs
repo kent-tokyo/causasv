@@ -29,6 +29,7 @@
 mod approx;
 mod cache;
 mod cpdag;
+mod d_convex;
 mod dag_dp;
 mod dag_dp_sparse;
 mod error;

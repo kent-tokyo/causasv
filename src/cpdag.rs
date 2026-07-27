@@ -337,6 +337,23 @@ impl Cpdag {
         Ok(sub)
     }
 
+    /// The strong d-convex hull of `required`, computed by picking one
+    /// consistent DAG extension (via [`Cpdag::consistent_extension`]) and
+    /// computing its strong d-convex hull there.
+    ///
+    /// This is sound for any CPDAG because the paper's Theorem 5 proves the
+    /// strong d-convex hull's *vertex set* is identical across every DAG in
+    /// a CPDAG's Markov equivalence class — so a single extension suffices;
+    /// there's no need to enumerate all of them. (That invariance holds for
+    /// target pairs the paper's Theorem 5 covers — see
+    /// `docs/strong_d_convex_hulls.md` for the exact precondition.)
+    pub fn strong_d_convex_hull(
+        &self,
+        required: &[NodeId],
+    ) -> Result<indexmap::IndexSet<NodeId>, CausasvError> {
+        self.consistent_extension()?.strong_d_convex_hull(required)
+    }
+
     fn check_id(&self, id: NodeId) -> Result<(), CausasvError> {
         if id.idx() >= self.names.len() {
             Err(CausasvError::InvalidNodeId(id))
