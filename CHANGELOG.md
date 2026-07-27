@@ -5,28 +5,65 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.8.6] — 2026-06
+## [0.8.6] — 2026-07-27
 
 ### Added
 - `AsvExplainer::approximate_uniform_sparse_adaptive_batched()`: batched quality path — collects an entire convergence batch of topological orderings, deduplicates the prefix coalition masks they need, and calls `value_fn_batch` once per batch. Reduces Python GIL round-trips from O(n × batch_size) to O(unique_masks_per_batch). ESS = n_samples exactly (no IS variance). Requires n ≤ 63; falls back to IS-adaptive batch for n > 63.
 - `ASVExplainer.explain_quality_batch()` Python method: same dict contract as `explain_quality` (values, stderr, ci, ci_low, ci_high, selected_method, fallback_from, fallback_reason); routes n ≤ 63 to uniform sparse batch, n > 63 to IS-adaptive batch.
+- `explain_safe()` helper (`py/causasv/helpers.py`): wraps `explain_quality()`/`explain_stability()` and returns ESS-ratio and rank-stability warnings plus a list of `unstable_features` (CI spans zero), so callers don't have to manually judge whether a result is trustworthy.
+- `TabularExplainer`/`make_tabular_value_fn`: `baseline` gains `"median"`, `"sample"`, `"background_expectation"` modes and accepts a custom callable, in addition to the existing `"mean"` default. `background_expectation` is vectorized via an optional `predict_fn_batch` (one call instead of one per background row) and `TabularExplainer.explain_instance_quality_batch()` stacks background rows across an entire sampling batch for the same reduction.
+- `ExactTreeConfig` / `exact_tree_with_config()` / `TreeExactCostEstimate` (issue #36): an O(n), allocation-free preflight that estimates `exact_tree`'s real cost (the product of every ancestor level's side-sibling order-ideal count, not just node count) before enumerating, and returns a structured `ExactTreeBudgetExceeded` error instead of hanging on a bushy-but-modest-n rooted tree. `auto()`/`auto_quality()` now run this preflight for rooted trees and fall back through `exact_dag_sparse` then `approximate`/`approximate_adaptive` when a shape is rejected.
+- `causasv.instability` package (opt-in, not imported by base `causasv`; matches the `plot.py` lazy-dependency pattern): a loosely-coupled adapter turning quietset label-instability reports into ASV attribution over a user-supplied DAG. quietset itself is untouched — only its JSONL output is read by field name.
+  - `bundle.py` (Phase 1): joins quietset's `Observation`/`StabilityReport` JSONL into a tabular `(sample_id, config_id)` dataset via a bundle manifest, keeping `cell_features` (the config axis being compared) disjoint from `replicate_axes` (the axis quietset varies internally to measure instability). Rejects target leakage, raw seed/shuffle_seed as features (no causal/ordinal meaning), mixed-file config drift, and silent 0-fill for missing values.
+  - `modeling.py` (Phase 2): `fit_instability_model` — logistic/ridge regression as the reproducible default, `HistGradientBoosting` opt-in via `model="hgb"`. Grouped CV (`GroupKFold`/`StratifiedGroupKFold`, default group = `sample_id`) so a physical sample never crosses train/test even across config cells. `min_cv_metric` has no built-in default; when set and unmet, a warning is recorded rather than blocking the run.
+  - `value.py` (Phase 3): `load_attribution_dag`, `make_global_value_fn` (retrain-per-coalition, memoized by coalition), `make_local_value_fn` (delegates to `make_tabular_value_fn`) — DAG-aware ASV value functions over raw (pre-encoding) feature names.
+  - `sensitivity.py` (Phase 4): `explain_with_dag_sensitivity` — runs `explain_safe` per DAG and, across multiple DAGs, aggregates mean/std ASV, Kendall-tau rank stability, sign stability, and rank spread. Requires all DAGs to share the same node set (checked up front, unlike `ASVEnsembleExplainer`).
+  - `report.py` (Phase 5): `build_attribution_report`/`summarize_attribution`/`dump_attribution_json` — `causasv-instability-attribution-v1` output schema, bucketing each feature into exactly one of robustly_attributed/uncertain/dag_sensitive/insufficient_evidence.
+  - `examples/quietset_label_instability.py` (Phase 6): runnable CLI wiring Phases 1–5 (`--bundle` or `--observations`/`--scored`, `--dag` repeatable, `--mode global/local`). Never subprocesses quietset. See `docs/integrations/quietset_label_instability.md` for the bundle manifest schema and non-causal-claim framing.
+- Type stubs: `py/causasv/py.typed` (PEP 561 marker) + `py/causasv/causasv.pyi` covering `CausalDAG`/`ASVExplainer`'s public methods, so mypy/pyright resolve real types instead of `Any` at the FFI boundary.
+- `docs/comparison_shap.md`: quantitative runtime and attribution comparison against SHAP `KernelExplainer`, with `examples/compare_causasv_shap.py`.
 
 ### Changed
 - `causasv.explain_quality(value_fn_batch=…)` now routes through `explain_quality_batch()` instead of `explain_adaptive_batch()`. The batch path now returns ESS = n_samples and uniform sparse CI bounds for n ≤ 63, instead of IS-weighted estimates.
+- `auto()`/`auto_quality()`'s `n ≤ 20` dispatch branch now uses the same order-ideal BFS preflight as the other branches (budgeted at half the dense state count) instead of a stale `edge_count ≤ 2n` heuristic, which misjudged disconnected graphs (m=0 but up to 2ⁿ order ideals). Removes the now-unused `Dag::edge_count()`.
+- `auto()`'s `20 < n ≤ 28` branch now preflights against a memory-based `sparse_state_budget()` before attempting `exact_dag_sparse`, falling back to `approximate` with `fallback_reason` set when infeasible, instead of relying on failure after the fact.
+- IS/uniform sampling loops (serial, parallel, batched, adaptive, uniform — 10 call sites) now carry the previous step's cached mask forward instead of re-querying it, cutting cache lookups from 2n to n+1 per sample. Measured −17% to −36% (p<0.05) across approx benchmarks with the in-repo `v(S) = |S|`; see `docs/benchmarks.md` for the caveat that this is an upper bound when the caller's `value_fn` dominates cost.
+- `normal_quantile` (Beasley-Springer-Moro normal quantile approximation) moved from `python.rs` into `numerics.rs`, gated behind the `python` feature, so it can be unit-tested directly (previously PyO3-only, untestable under `extension-module`).
+- `py/causasv/instability.py` (~1400 lines) split into a package (`py/causasv/instability/{bundle,modeling,value,sensitivity,report}.py`) by the phase it was built in. No behavior change — all existing import paths continue to resolve identically.
+
+### Fixed
+- `CausalDAG.from_json` (P0): the hand-rolled parser matched the literal substrings `"from":"`/`"to":"`/`"nodes":[` with no space, so any standard `json.dumps()` output (which uses `", "`/`": "` spacing) silently produced an **empty graph with no error** instead of failing loudly. Replaced with structural parsing via `serde_json` (now a direct dependency), which is whitespace/formatting-insensitive by construction. `to_json` was also rewritten via `serde_json::json!` for correct string escaping.
+- `exact_tree` feasibility guard against combinatorial explosion (issue #36): `exact_tree`'s cost depends on tree *shape*, not node count — a modest-n (≈61) but wide/deep rooted tree could force `auto()`/`auto_quality()` to hang and eventually OOM. See `ExactTreeConfig` under Added. The default budget (50,000 single-node terms / 200,000 total) is calibrated against measured wall-clock time, not term counts alone: a balanced binary tree of height 4 (n=31) has "only" ~3.6M estimated terms but takes ~20-25s to actually run, since per-combination cost isn't O(1). Known follow-up, out of scope here: `approximate()` has its own undocumented n ≤ 64 bitmask cap, so a rooted tree with n > 64 currently has no working exact or approximate method.
+- `cargo-audit`/`pip-audit` findings: `crossbeam-epoch` bumped (transitively, via `cargo update -p crossbeam-epoch --precise 0.9.20`) fixing RUSTSEC-2026-0204; CI's `setuptools`/`pip` upgraded before running `pip-audit`, fixing PYSEC-2026-3447; `ruff` pinned to 0.15.20 in both CI and `py/pyproject.toml`'s dev extra after an unpinned install picked up a new lint rule and took down every Python CI job at once.
+- `_validate_cv_folds` (instability `modeling.py`/`value.py`): `cv_folds <= total groups` wasn't sufficient for `StratifiedGroupKFold`, which also needs ≥1 group per class per fold — a small/imbalanced binary target could pass the first check and still crash inside sklearn. Now checked once up front and shared by `fit_instability_model` and `make_global_value_fn`.
+
+### Dependencies
+- `rand` 0.10.1 → 0.10.2, `thiserror` 2.0.18 → 2.0.19 (patch bumps).
+- `actions/upload-artifact` 4 → 7, `actions/download-artifact` 4 → 8, `actions/setup-python` 6 → 7 (GitHub Actions).
 
 ### Tests
 - `tests/golden_tests.rs`: algebraic identity tests — `v(S) = Σwᵢ → ASV_i = wᵢ` verified at < 1e-10 tolerance across all three exact code paths (exact, exact_dag, exact_dag_sparse) on chain / fork / collider topologies.
 - `tests/approx_batch_tests.rs`: batch accuracy vs exact_dag (diamond, weighted v), ESS = n_samples invariant, convergence flag, additive identity.
 - `tests/uniform_sampler_tests.rs`: non-additive `v(S) = |S|²` test for `approximate_uniform_sparse_adaptive` (verifies correctness beyond additive identity).
+- `tests/property_tests.rs`: `prop_approx_matches_exact_dag_per_node` — random DAGs × non-additive `v(S) = |S|²`, per-node error vs `exact_dag` (errors can't cancel in the sum, unlike the existing efficiency-axiom check).
+- `tests/approx_accuracy_tests.rs`: `test_adaptive_ci_coverage_additive` — 30-seed empirical 95% CI coverage check (≥0.75 coverage rate) on the Rust side, mirroring `py/tests/test_ci_coverage.py`.
+- `tests/exact_tree_feasibility_tests.rs` (issue #36): default-budget and custom-budget rejection/acceptance cases, `auto()`/`auto_quality()` fallback-chain behavior when `exact_tree` is infeasible.
 - `py/tests/test_ci_coverage.py`: empirical 95% CI coverage check on 25-node dense DAG (forces uniform_sparse_adaptive path); split into quick (10 seeds, CI) and `@pytest.mark.slow` (30 seeds, skipped by default).
 - `py/tests/test_diagnostics.py`: key-presence contract test — both exact and approximate paths must return all required dict keys.
+- `py/tests/test_instability.py`: full 15-item spec coverage for the `causasv.instability` package (byte-identical JSON, grouped-CV non-leakage, leakage-guard rejection, malformed/cyclic DAG rejection, CI/ESS reporting, seed and cross-DAG rank stability, end-to-end CLI subprocess test), plus a contract test asserting the Phase-1→6 package split preserves the full prior flat-module symbol surface.
 
 ### CI
-- `.github/workflows/ci.yml`: add `python -m py_compile` syntax sweep over all `.py` files before maturin build; add `examples/benchmark_corpus.py` run step alongside `quality_workflow.py`.
-- `py/pyproject.toml`: register `slow` pytest marker; `addopts = "-m 'not slow'"` excludes slow tests from default CI run.
+- `.github/workflows/ci.yml`: add `python -m py_compile` syntax sweep over all `.py` files before maturin build; add `examples/benchmark_corpus.py` run step alongside `quality_workflow.py`; add `ruff check` step; Rust job now runs across ubuntu/macos/windows instead of ubuntu-only; Python job now tests 3.9–3.13 instead of 3.11-only.
+- `py/pyproject.toml`: register `slow` pytest marker; `addopts = "-m 'not slow'"` excludes slow tests from default CI run; add dynamic metadata fields and classifiers.
+- Add `cargo-llvm-cov`/`pytest-cov` coverage measurement (report-only, no threshold gate).
+- Add `cargo-deny check licenses` as a blocking CI gate, with an allow-list in `deny.toml` built from the dependency tree's actual licenses (MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, Unicode-3.0).
+- `release.yml`: Linux release wheels now build both `x86_64` and `aarch64` targets.
 
 ### Docs
 - `docs/comparison_shap.md`: add caveat noting the runtime comparison reflects DAG-known sparse conditions (chain DAG, exact sparse DP) where causasv's advantage is largest.
+- Add module-level and per-item rustdoc to `CausasvError`, `Dag`, and the `topo` module.
+- `CONTRIBUTING.md`: development setup and pre-PR checklist (fmt, clippy, ruff, tests).
+- README (all 3 languages): `exact_tree`/`ExactTreeConfig` feasibility-guard documentation (issue #36), `auto` dispatch text corrections, `explain_safe()`/`TabularExplainer` baseline docs, `docs/integrations/quietset_label_instability.md`.
 
 ---
 
