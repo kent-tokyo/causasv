@@ -40,11 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [x86_64, aarch64]
+        # aarch64 disabled: maturin can't find Python interpreters inside the
+        # manylinux container under QEMU emulation (fails even with
+        # docker/setup-qemu-action set up) -- see tasks/todo.md for follow-up.
+        target: [x86_64]
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.target != 'x86_64'
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: py
