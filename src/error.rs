@@ -59,4 +59,19 @@ pub enum CausasvError {
         estimated_total_terms: u64,
         total_term_budget: u64,
     },
+    /// A `Cpdag::add_directed_edge`/`add_undirected_edge` call conflicts with an
+    /// edge that already exists between the same pair of nodes (opposite
+    /// direction, or directed vs. undirected).
+    #[error(
+        "conflicting edge between {0:?} and {1:?}: an edge with a different orientation already exists"
+    )]
+    ConflictingEdge(NodeId, NodeId),
+    /// `Cpdag::consistent_extension` (Dor-Tarsi PDAG-to-DAG extension) found no
+    /// valid fully-directed acyclic extension — the PDAG's undirected chain
+    /// components aren't consistently orientable (e.g. a chordless undirected
+    /// cycle). `Cpdag::validate_cpdag` uses this as its extendability oracle.
+    #[error(
+        "PDAG has no consistent DAG extension (undirected edges can't be oriented without creating a cycle or a new v-structure)"
+    )]
+    NotExtendable,
 }
