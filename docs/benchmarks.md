@@ -156,21 +156,20 @@ correctness.md). Still a smooth, explainable step, not a cliff.
 | 65 | 7.41 ms |
 | 128 | 17.4 ms |
 
-64→65 is **+133%** here — much larger than the serial path's +37%, and this
-is a real design cost, not a representation artifact: the n ≤ 64 batched path
-persists its coalition→value cache across the whole call, so on a chain
-(single valid ordering, same n+1 coalitions revisited every round) it calls
-`value_fn_batch` once total after the first round warms the cache. The n > 64
-batched path deliberately does **not** persist its cache across rounds (see
-"Round-scoped, not permanent" below and correctness.md) — every round
-re-resolves the same coalitions via a fresh `value_fn_batch` call. In this
-benchmark the callback itself is trivial, so the visible cost is the
-surrounding machinery (dedup, `HashMap` allocation) running ~8× instead of
-~1× (2,000 samples / 256 batch_size ≈ 8 rounds); for an expensive callback
-(a real Python model), this would mean ~8× the callback cost too, on this
-specific "high structural repetition" shape. See the tradeoff discussion in
-correctness.md — a bounded *persistent* cache would avoid this while still
-satisfying "not unbounded."
+The n > 64 batched path now shares one bounded `LargeCoalitionCache` across
+every round of a call (same admission-capped design as the non-batched
+paths), so on a chain (single valid ordering, same n+1 coalitions revisited
+every round) `value_fn_batch` is called once total, not once per round — see
+`persistent_cache_collapses_batched_calls_on_chain` in `src/approx_large.rs`
+and the mechanism writeup in correctness.md. That said, the boundary jump
+measured here does **not** shrink much versus a round-scoped cache, because
+this benchmark's callback is trivial: the per-round cost is dominated by
+coalition-key bookkeeping (snapshotting, sorting, and deduping
+`batch_size × (n+1)` keys), which runs every round regardless of whether the
+value underneath is already cached. The call-count reduction is a real win
+specifically for expensive value functions (a real Python model, costing
+milliseconds per call) — confirmed with a controlled same-process comparison
+in correctness.md — just not one this trivial-callback benchmark can show.
 
 #### Chain, adaptive batched (batch_size=256, max 2k samples)
 
@@ -194,9 +193,9 @@ comparable n (3.54 ms/66 vs 3.07 ms/65): every main-chain node has a real
 2-way sampling choice (continue the chain or take the leaf), so distinct
 samples visit more distinct prefixes and the coalition cache is warm less
 often — a real, expected difference in *workload*, not a representation-cost
-artifact. Unlike the chain, this shape does not maximize the batched path's
-round-scoped-cache cost (above), since it still shares structure across
-samples, just less than a chain does.
+artifact. Unlike the chain, this shape doesn't maximize repetition across rounds the
+same way (above), since distinct samples share less structure with each
+other than a chain's samples do.
 
 #### Cache boundedness (not a Criterion benchmark — see `src/approx_large.rs`)
 
@@ -208,16 +207,19 @@ configured cap (`DEFAULT_LARGE_CACHE_MAX_ENTRIES`, currently 50,000 per cache
 instance — see correctness.md for why this is per-instance, not aggregate,
 under the parallel paths).
 
-#### Round-scoped, not permanent (batched paths only)
+#### Batched-path cache: shared across rounds, still bounded
 
-The batched large paths don't carry a persistent cache across sampling
-rounds at all (see correctness.md), so their memory is bounded by
-`n × batch_size` per round instead of by the run's total sample count. An
-internal test (`batched_chunking_does_not_change_additive_result`,
-`src/approx_large.rs`) forces this round's unique-coalition count past
+The batched large paths share one `LargeCoalitionCache` across every round of
+a call (admission-capped, same as the non-batched paths — see correctness.md),
+so memory is bounded by the cache's entry cap plus `n × batch_size` for the
+round in flight, not by the run's total sample count. An internal test
+(`batched_chunking_does_not_change_additive_result`, `src/approx_large.rs`)
+forces one round's unique-coalition count past
 `MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH` (4,096) on a 70-node antichain and
 confirms the result is unaffected by the resulting chunked `value_fn_batch`
-calls.
+calls; a second test (`persistent_cache_collapses_batched_calls_on_chain`)
+confirms the cache is actually reused across rounds, not just bounded within
+one.
 
 Reproduce the timing numbers above with:
 ```

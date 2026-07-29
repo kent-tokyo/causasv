@@ -476,13 +476,17 @@ cost grows smoothly (~37% at the boundary itself, then roughly linearly with
 n afterward) — there is no discontinuous cliff at n=65, just the cost of
 hashing a `&[u64]` slice instead of a bare `u64` on every cache lookup (the
 coalition buffer itself is reused across samples, not reallocated). The
-batched paths pay a larger step at this boundary (~+130% on a chain) for a
-different, deliberate reason — their n > 64 coalition cache is round-scoped
-rather than persisted across the whole call — see
-[docs/benchmarks.md](docs/benchmarks.md) for the full large-DAG table
-(seeded-parallel, adaptive, batched, and non-tree/collider shapes) and
+batched paths' n > 64 coalition cache is shared across every round of a call
+(bounded, admission-capped, same as the non-batched paths), so a chain's
+repeated per-round coalitions are only ever resolved once — but this crate's
+own benchmarks use a cheap synthetic callback, so the boundary step there
+still reflects per-round key bookkeeping rather than callback cost; the
+call-count reduction is a real win specifically for expensive value functions
+(a real Python model). See [docs/benchmarks.md](docs/benchmarks.md) for the
+full large-DAG table (seeded-parallel, adaptive, batched, and
+non-tree/collider shapes) and
 [docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64)
-for that tradeoff.
+for the measured comparison.
 
 This balanced tree at n=31 is deliberately benchmarked via `approx`, not
 `exact_tree`: its shape's per-node cost (176,020 — see

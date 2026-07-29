@@ -49,7 +49,10 @@ use crate::sampler::{
 /// `LargeCoalitionCache` per worker thread, and unseeded-parallel builds one
 /// per Rayon fold split (not guaranteed to equal the thread count), so
 /// aggregate memory across a parallel run is roughly this cap × however many
-/// instances exist, not this cap alone. Chosen so a handful of instances stay
+/// instances exist, not this cap alone. The batched paths
+/// (`approximate_asv_batched_large`/`approximate_asv_adaptive_batched_large`)
+/// are single-threaded and build exactly one instance for the whole call,
+/// shared across every sampling round. Chosen so a handful of instances stay
 /// in the tens-of-MB range in aggregate (entries × instances × ~100
 /// bytes/entry); see docs/benchmarks.md for measured hit rates by shape.
 const DEFAULT_LARGE_CACHE_MAX_ENTRIES: usize = 50_000;
@@ -115,17 +118,23 @@ where
     Ok(v)
 }
 
-/// Resolve every unique coalition sampled this round via `value_fn_batch`,
-/// chunked so no single call receives more than
-/// `MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH` coalitions. Returns a fresh,
-/// round-scoped cache — the batched large paths deliberately do not persist a
-/// coalition cache across rounds (unlike the non-batched large paths' bounded
-/// `LargeCoalitionCache`), so memory stays proportional to `n × batch_size`
-/// for this round only, never to the run's total sample count.
+/// Resolve every unique coalition sampled this round against `cache`,
+/// calling `value_fn_batch` only for coalitions the cache hasn't seen yet
+/// (chunked so no single call receives more than
+/// `MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH` coalitions). `cache` is owned by
+/// the caller and shared across every round of the run — on shapes with
+/// structural repetition across rounds (e.g. a chain, whose samples all
+/// share the same n+1 prefixes every round), this collapses `value_fn_batch`
+/// traffic from one call per round to one call total, since every round
+/// after the first is satisfied entirely from the cache. The per-round dedup
+/// (`sort_unstable` + `dedup`) still runs first so a round with repeated
+/// coalitions across its own samples never queries the cache twice for the
+/// same key.
 fn resolve_batch_unique_coalitions<F>(
     n: usize,
     samples: &[SampledOrdering],
     value_fn_batch: &F,
+    cache: &mut LargeCoalitionCache,
 ) -> Result<HashMap<Box<[u64]>, f64>, CausasvError>
 where
     F: Fn(&[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError>,
@@ -144,7 +153,17 @@ where
     unique_keys.dedup();
 
     let mut value_cache: HashMap<Box<[u64]>, f64> = HashMap::with_capacity(unique_keys.len());
-    for chunk in unique_keys.chunks(MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH) {
+    let mut misses: Vec<Box<[u64]>> = Vec::new();
+    for key in unique_keys {
+        match cache.get(&key) {
+            Some(v) => {
+                value_cache.insert(key, v);
+            }
+            None => misses.push(key),
+        }
+    }
+
+    for chunk in misses.chunks(MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH) {
         let coalitions: Vec<Vec<NodeId>> = chunk.iter().map(|k| words_to_sorted_nodes(k)).collect();
         let values = value_fn_batch(&coalitions)?;
         if values.len() != chunk.len() {
@@ -156,6 +175,7 @@ where
         }
         for (key, val) in chunk.iter().zip(values) {
             value_cache.insert(key.clone(), val);
+            cache.insert(key.clone(), val);
         }
     }
     Ok(value_cache)
@@ -535,9 +555,9 @@ where
 
 /// Batched IS estimator for `n > 64` DAGs. See
 /// `crate::approx::approximate_asv_batched` for the small-n counterpart
-/// (rescaling, no Kahan, single-threaded). Unlike that counterpart, the
-/// coalition→value cache is *not* kept across sampling rounds — see
-/// `resolve_batch_unique_coalitions`.
+/// (rescaling, no Kahan, single-threaded). The coalition→value cache
+/// (`LargeCoalitionCache`) is created once and shared across every sampling
+/// round — see `resolve_batch_unique_coalitions`.
 pub(crate) fn approximate_asv_batched_large<F>(
     dag: &Dag,
     value_fn_batch: F,
@@ -555,6 +575,7 @@ where
     let batch_size = config.batch_size.unwrap_or(256).max(1);
     let seed = config.seed;
     let mut rng = make_rng(seed);
+    let mut cache = LargeCoalitionCache::new(DEFAULT_LARGE_CACHE_MAX_ENTRIES);
     let mut numerator = vec![0.0f64; n];
     let mut denominator = 0.0f64;
     let mut sum_w_sq = 0.0f64;
@@ -577,7 +598,8 @@ where
             })
             .collect();
 
-        let value_cache = resolve_batch_unique_coalitions(n, &samples, &value_fn_batch)?;
+        let value_cache =
+            resolve_batch_unique_coalitions(n, &samples, &value_fn_batch, &mut cache)?;
 
         let batch_max = samples
             .iter()
@@ -634,8 +656,8 @@ where
 /// Adaptive batched IS estimator for `n > 64` DAGs. See
 /// `crate::approx::approximate_asv_adaptive_batched` for the small-n
 /// counterpart (rescaling + Kahan, single-threaded). As in
-/// `approximate_asv_batched_large`, the coalition cache is round-scoped, not
-/// persisted across the whole run.
+/// `approximate_asv_batched_large`, the coalition cache is created once and
+/// shared across the whole run.
 pub(crate) fn approximate_asv_adaptive_batched_large<F>(
     dag: &Dag,
     value_fn_batch: F,
@@ -657,6 +679,7 @@ where
     let n = dag.node_count();
 
     let mut rng = make_rng(config.seed);
+    let mut cache = LargeCoalitionCache::new(DEFAULT_LARGE_CACHE_MAX_ENTRIES);
     let mut numerator = vec![0.0f64; n];
     let mut num_comp = vec![0.0f64; n];
     let mut num_sq = vec![0.0f64; n];
@@ -686,7 +709,8 @@ where
             })
             .collect();
 
-        let value_cache = resolve_batch_unique_coalitions(n, &samples, &value_fn_batch)?;
+        let value_cache =
+            resolve_batch_unique_coalitions(n, &samples, &value_fn_batch, &mut cache)?;
 
         let batch_max = samples
             .iter()
@@ -980,6 +1004,55 @@ mod tests {
                 "node {node:?}: expected 1.0 for additive v(S)=|S|, got {v}"
             );
         }
+    }
+
+    /// The batched cache is shared across rounds (not rebuilt per round), so
+    /// on a shape with full structural repetition across rounds — a chain has
+    /// exactly one topological order, so every round's n+1 prefixes are
+    /// identical to every other round's — only the first round should ever
+    /// reach `value_fn_batch`; every later round is satisfied entirely from
+    /// the cache. This exercises `resolve_batch_unique_coalitions` directly
+    /// (rather than through the public batched entry point) so the round loop
+    /// and the shared cache are both visible to the assertion.
+    #[test]
+    fn persistent_cache_collapses_batched_calls_on_chain() {
+        const ROUNDS: usize = 10;
+        const BATCH: usize = 20;
+        let n = 65;
+        let dag = make_chain(n);
+        let base_in_deg = dag.in_degrees();
+        let mut rng = make_rng(Some(9));
+        let mut scratch = SamplerScratch::new(n);
+        let mut cache = LargeCoalitionCache::new(DEFAULT_LARGE_CACHE_MAX_ENTRIES);
+        let call_stats = std::cell::RefCell::new((0usize, 0usize)); // (num_calls, coalitions_evaluated)
+        let counting_batch = |coalitions: &[Vec<NodeId>]| -> Result<Vec<f64>, CausasvError> {
+            let mut stats = call_stats.borrow_mut();
+            stats.0 += 1;
+            stats.1 += coalitions.len();
+            Ok(coalitions.iter().map(|c| c.len() as f64).collect())
+        };
+
+        for _ in 0..ROUNDS {
+            let samples: Vec<SampledOrdering> = (0..BATCH)
+                .map(|_| {
+                    let log_q = sample_one_into(&dag, &mut rng, &mut scratch, &base_in_deg);
+                    SampledOrdering {
+                        ordering: scratch.ordering.clone(),
+                        log_q,
+                    }
+                })
+                .collect();
+            resolve_batch_unique_coalitions(n, &samples, &counting_batch, &mut cache).unwrap();
+        }
+
+        let (num_calls, coalitions_evaluated) = *call_stats.borrow();
+        assert_eq!(
+            num_calls, 1,
+            "chain(65) has a single topological order, so rounds 2..={ROUNDS} should be \
+             100% cache hits and never reach value_fn_batch; got {num_calls} call(s)"
+        );
+        assert_eq!(coalitions_evaluated, n + 1);
+        assert_eq!(cache.len(), n + 1);
     }
 
     proptest! {

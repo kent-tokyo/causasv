@@ -150,21 +150,35 @@ cache per worker thread, so aggregate memory is (roughly) the cap × thread
 count; unseeded-parallel builds one cache per Rayon fold split, which is not
 guaranteed to equal the thread count.
 
-The batched paths (`approximate_batched`/`approximate_adaptive_batched`) go
-further and don't persist a cache across sampling rounds at all — each
-round's unique coalitions are resolved via `value_fn_batch`, chunked if they
-exceed an internal cap, and then discarded, so memory stays proportional to
-`n × batch_size` for that round rather than to the run's total sample count.
-**This has a real cost, not just a memory-safety benefit**: on a DAG shape
-with high structural repetition across rounds (a chain has only one valid
-ordering, so every round revisits the *same* n+1 coalitions), the n ≤ 64
-batched path calls `value_fn_batch` once total after the cache warms up,
-while the n > 64 path calls it once *per round* — for an expensive value
-function (e.g. a Python model callback), that is a real, user-visible cost
-this design accepts in exchange for not growing memory with the run's total
-sample count. A bounded *persistent* cache (evicting instead of just
-declining new inserts) would also satisfy "not unbounded" while avoiding this
-— see the measured gap in docs/benchmarks.md and the discussion in this PR.
+The batched paths (`approximate_batched`/`approximate_adaptive_batched`) share
+one `LargeCoalitionCache` across every sampling round of a call, admission-capped
+the same way as the non-batched paths (lookups always work; new inserts are
+declined once the cap is hit; nothing is ever evicted). Each round still does
+its own dedup first (`sort_unstable` + `dedup` on that round's sampled
+prefixes) so a round's repeated coalitions never query the cache twice for the
+same key — only the *first* time a coalition is seen across the whole run
+reaches `value_fn_batch`. On a DAG shape with high structural repetition
+across rounds (a chain has only one valid ordering, so every round revisits
+the *same* n+1 coalitions), this collapses `value_fn_batch` traffic from once
+per round to once *total*: a dedicated test
+(`persistent_cache_collapses_batched_calls_on_chain`, `src/approx_large.rs`)
+drives a 65-node chain through 10 rounds and asserts exactly one call reaches
+the batch value function.
+
+That call-count reduction is a real win for an expensive value function (a
+Python model callback measured in milliseconds), but it does **not** show up
+in this crate's own Criterion benchmarks, because those use a cheap synthetic
+callback — there, the dominant per-round cost is the coalition-key
+bookkeeping itself (snapshotting, sorting, and deduping `batch_size × (n+1)`
+`Box<[u64]>` keys every round), which runs regardless of whether the value
+underneath is already cached. A controlled same-process comparison confirms
+both ends of this: with a 50µs/call synthetic cost the persistent cache saves
+under 2% of wall time (bookkeeping dominates), but with a 5ms/call cost — closer
+to a real model-inference callback — it saves roughly (rounds − 1) × 5ms, i.e.
+most of the added cost from repeated invocation. In other words: this change
+helps exactly the case it was designed for (expensive value functions), and is
+neutral on cheap ones. See docs/benchmarks.md for the Criterion numbers this
+implies for `cargo bench`'s synthetic callback specifically.
 
 See [docs/benchmarks.md](docs/benchmarks.md) for the measured n=64→65
 boundary cost (a smooth increase, not a cliff — driven by hashing/comparing a

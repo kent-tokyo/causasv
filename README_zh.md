@@ -345,7 +345,7 @@ Apple M 系列（arm64，release 构建）部分结果。`v(S) = |S|`。完整�
 | 链式 | 128 | `approx` 串行种子（2k，large 后端） | 6.24 ms |
 | 链式 | 256 | `approx` 串行种子（2k，large 后端） | 15.6 ms |
 
-n=64→65 这一行是联盟表示切换的边界（见上文"n 的上限实际作用于何处"）：每个样本的成本平滑增长（边界本身增加约 37%，之后大致随 n 线性增长），n=65 处没有不连续的断层——联盟缓冲区本身在样本间复用而不重新分配，因此这是每次缓存查找时哈希 `&[u64]` 切片（而非裸 `u64`）的开销。批量（batched）路径在此边界处的跳跃更大（链式约 +130%）——这是有意的设计取舍：n > 64 的联盟缓存按轮次作用域，而不是在整个调用期间持久化。并行、自适应、批量以及非树形状的测量结果与批量路径的取舍讨论见 [docs/benchmarks.md](docs/benchmarks.md) 与 [docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64)。
+n=64→65 这一行是联盟表示切换的边界（见上文"n 的上限实际作用于何处"）：每个样本的成本平滑增长（边界本身增加约 37%，之后大致随 n 线性增长），n=65 处没有不连续的断层——联盟缓冲区本身在样本间复用而不重新分配，因此这是每次缓存查找时哈希 `&[u64]` 切片（而非裸 `u64`）的开销。批量（batched）路径的 n > 64 联盟缓存现在跨整个调用的所有轮次共享（与非批量路径相同的有上限、仅准入式设计），因此在链式这类轮次间重复联盟很多的形状上，`value_fn_batch` 总共只会被调用一次，而不是每轮调用一次。不过本 crate 自身的基准测试使用的是廉价的合成回调，因此这里的边界跳跃反映的仍是每轮联盟键管理（快照、排序、去重）的开销，而非回调本身的开销——调用次数的减少真正带来收益的场景是开销较大的值函数（例如真实的 Python 模型）。并行、自适应、批量以及非树形状的测量结果与这一对比的细节见 [docs/benchmarks.md](docs/benchmarks.md) 与 [docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64)。
 
 这棵 n=31 的平衡树刻意使用 `approx` 而非 `exact_tree` 进行基准测试：该形状的单节点成本（176,020 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）超出了 `ExactTreeConfig` 的默认预算，实际运行 `exact_tree` 需要约 20-25 秒。`auto`/`auto_quality` 通过 O(n) 预检自动识别这一点并回退，而不会真的运行数十秒。
 
