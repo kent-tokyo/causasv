@@ -464,18 +464,22 @@ Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [do
 | Chain | 20 | `approx` serial seeded (10k) | **19 ms** |
 | Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
 | Balanced tree | 31 | `approx` seeded (10k samples) | 83 ms |
-| Chain | 64 | `approx` serial seeded (2k, u64 backend) | 2.24 ms |
-| Chain | 65 | `approx` serial seeded (2k, large backend) | 3.07 ms |
-| Chain | 128 | `approx` serial seeded (2k, large backend) | 6.24 ms |
-| Chain | 256 | `approx` serial seeded (2k, large backend) | 15.6 ms |
+| Chain | 64 | `approx` serial seeded (2k, u64 backend) | 2.48 ms |
+| Chain | 65 | `approx` serial seeded (2k, large backend) | 4.33 ms |
+| Chain | 128 | `approx` serial seeded (2k, large backend) | 8.55 ms |
+| Chain | 256 | `approx` serial seeded (2k, large backend) | 22.0 ms |
 
 The n=64→65 row pair is the coalition-representation boundary this crate's
 `approx`/`approx_adaptive`/`approx_batched`/`approx_adaptive_batch` paths
 switch across (see "Where the n limits actually apply" above): per-sample
-cost grows smoothly (~37% at the boundary itself, then roughly linearly with
-n afterward) — there is no discontinuous cliff at n=65, just the cost of
-hashing a `&[u64]` slice instead of a bare `u64` on every cache lookup (the
-coalition buffer itself is reused across samples, not reallocated). The
+cost grows smoothly (~75% at the boundary itself in this measurement pass —
+`cargo bench` on this machine is noisy enough between sessions that this
+specific step measured ~37% in an earlier pass for the same unchanged code;
+see [docs/benchmarks.md](docs/benchmarks.md) for the caveat — then roughly
+linearly with n afterward) — there is no discontinuous cliff at n=65 in
+either measurement, just the cost of hashing a `&[u64]` slice instead of a
+bare `u64` on every cache lookup (the coalition buffer itself is reused
+across samples, not reallocated). The
 batched paths' n > 64 coalition cache is shared across every round of a call
 (bounded, admission-capped, same as the non-batched paths), so a chain's
 repeated per-round coalitions are only ever resolved once — but this crate's

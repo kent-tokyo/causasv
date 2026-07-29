@@ -108,92 +108,114 @@ switch from a `u64` bitmask coalition to a growable word-vector bitset
 (`LargeCoalition`, `src/coalition.rs`) for n > 64 — see
 [correctness.md](correctness.md#large-dag-approximate-paths-n--64). These
 numbers check that switch doesn't introduce a discontinuous cost jump. All
-numbers below are from a single measurement pass on this machine; `cargo bench`
-here is noisy run-to-run (thermal throttling), so treat deltas under ~15% as
-within run-to-run noise, not signal.
+numbers below are from a single, internally-consistent measurement pass
+(every row below from the same `cargo bench` invocation, back to back) —
+**`cargo bench` on this machine is noisy enough between separate sessions
+that absolute numbers and even boundary percentages should not be trusted to
+more than roughly a factor of 2.** Concretely: an earlier measurement pass of
+this exact serial-path code (unchanged since) recorded a 64→65 step of +37%;
+this pass recorded +75% for the same code path. Treat "cost grows smoothly,
+no cliff at n=65" as the reliable qualitative claim; treat specific
+percentages as one machine's one snapshot, not a guarantee.
 
 #### Chain, serial seeded (2k samples)
 
 | n | Backend | Time |
 |---|---------|------|
-| 64 | `u64` | 2.24 ms |
-| 65 | `LargeCoalition` | 3.07 ms |
-| 128 | `LargeCoalition` | 6.24 ms |
-| 256 | `LargeCoalition` | 15.6 ms |
+| 64 | `u64` | 2.48 ms |
+| 65 | `LargeCoalition` | 4.33 ms |
+| 128 | `LargeCoalition` | 8.55 ms |
+| 256 | `LargeCoalition` | 22.0 ms |
 
-64→65 is a **+37% step**, then cost grows roughly linearly with n from there
-— no cliff. The coalition buffer itself is reused across samples (not
-reallocated — see `LargeCoalition::clear()`), so this step is not allocation
-overhead; it's hashing/comparing a `&[u64]` slice on every cache lookup
-instead of a bare `u64`, which is unavoidable once addressing more than 64
-nodes needs more than one machine word.
+64→65 is a **+75% step** in this pass (measured at +37% in an earlier
+session — see the noise note above), then cost grows roughly linearly with n
+from there — no cliff either time. The coalition buffer itself is reused
+across samples (not reallocated — see `LargeCoalition::clear()`), so this
+step is not allocation overhead; it's hashing/comparing a `&[u64]` slice on
+every cache lookup instead of a bare `u64`, which is unavoidable once
+addressing more than 64 nodes needs more than one machine word.
 
 #### Chain, seeded parallel (4 threads, 10k samples)
 
 | n | Backend | Time |
 |---|---------|------|
-| 64 | `u64` | 4.93 ms |
-| 65 | `LargeCoalition` | 9.94 ms |
+| 64 | `u64` | 6.51 ms |
+| 65 | `LargeCoalition` | 11.5 ms |
 
-+102% here vs +37% for serial: each of the 4 workers builds its own
-`LargeCoalitionCache`, so the same per-lookup overhead is paid 4× over, once
-per worker (see the "per cache instance, not per aggregate" note in
-correctness.md). Still a smooth, explainable step, not a cliff.
++77% here, in the same range as this pass's serial step (+75%): each of the
+4 workers builds its own `LargeCoalitionCache`, so the same per-lookup
+overhead is paid 4× over, once per worker (see the "per cache instance, not
+per aggregate" note in correctness.md). Still a smooth, explainable step,
+not a cliff.
 
 #### Chain, adaptive (single-threaded, max 2k samples)
 
 | n | Time |
 |---|------|
-| 64 | 2.68 ms |
-| 65 | 3.42 ms |
-| 128 | 7.19 ms |
+| 64 | 2.86 ms |
+| 65 | 3.72 ms |
+| 128 | 7.73 ms |
+
+64→65 here is +30% — smaller than the serial path's +75% in this same pass,
+despite near-identical per-sample mechanics (both single-threaded,
+rescale+Kahan). This gap is itself an illustration of the noise this section
+warns about: the absolute deltas involved are low-single-digit milliseconds,
+well within this machine's run-to-run variance.
 
 #### Chain, batched (batch_size=256, 2k samples)
 
 | n | Time |
 |---|------|
-| 64 | 3.18 ms |
-| 65 | 7.41 ms |
-| 128 | 17.4 ms |
+| 64 | 3.36 ms |
+| 65 | 7.75 ms |
+| 128 | 16.3 ms |
 
-The n > 64 batched path now shares one bounded `LargeCoalitionCache` across
-every round of a call (same admission-capped design as the non-batched
-paths), so on a chain (single valid ordering, same n+1 coalitions revisited
-every round) `value_fn_batch` is called once total, not once per round — see
++131% here — this is the one boundary percentage that *has* reproduced
+consistently across measurement sessions (+133% previously, +131% now),
+unlike the smaller non-batched deltas above. The n > 64 batched path now
+shares one bounded `LargeCoalitionCache` across every round of a call (same
+admission-capped design as the non-batched paths), so on a chain (single
+valid ordering, same n+1 coalitions revisited every round) `value_fn_batch`
+is called once total, not once per round — see
 `persistent_cache_collapses_batched_calls_on_chain` in `src/approx_large.rs`
 and the mechanism writeup in correctness.md. That said, the boundary jump
-measured here does **not** shrink much versus a round-scoped cache, because
-this benchmark's callback is trivial: the per-round cost is dominated by
+measured here does **not** shrink versus a round-scoped cache, because this
+benchmark's callback is trivial: the per-round cost is dominated by
 coalition-key bookkeeping (snapshotting, sorting, and deduping
 `batch_size × (n+1)` keys), which runs every round regardless of whether the
-value underneath is already cached. The call-count reduction is a real win
-specifically for expensive value functions (a real Python model, costing
-milliseconds per call) — confirmed with a controlled same-process comparison
-in correctness.md — just not one this trivial-callback benchmark can show.
+value underneath is already cached — and that bookkeeping cost is what
+reproduces so consistently here, not callback cost. The call-count reduction
+is a real win specifically for expensive value functions (a real Python
+model, costing milliseconds per call) — confirmed with a controlled
+same-process comparison in correctness.md — just not one this
+trivial-callback benchmark can show.
 
 #### Chain, adaptive batched (batch_size=256, max 2k samples)
 
 | n | Time |
 |---|------|
-| 64 | 3.50 ms |
-| 65 | 6.17 ms |
-| 128 | 13.5 ms |
+| 64 | 3.68 ms |
+| 65 | 7.80 ms |
+| 128 | 17.9 ms |
+
++112% — same driver as the non-adaptive batched path above.
 
 #### Non-chain shapes (genuine IS variance, not a single deterministic ordering)
 
 | Shape | n | Backend | Time (2k samples, serial seeded) |
 |-------|---|---------|-----------------------------------|
-| Diamond-chain (layered, collider sinks) | 64 | `u64` | 2.03 ms |
-| Diamond-chain (layered, collider sinks) | 127 | `LargeCoalition` | 5.50 ms |
-| Caterpillar (fork-chain: chain + 1 leaf/node) | 66 | `LargeCoalition` | 3.54 ms |
-| Caterpillar (fork-chain: chain + 1 leaf/node) | 128 | `LargeCoalition` | 7.15 ms |
+| Diamond-chain (layered, collider sinks) | 64 | `u64` | 2.53 ms |
+| Diamond-chain (layered, collider sinks) | 127 | `LargeCoalition` | 6.79 ms |
+| Caterpillar (fork-chain: chain + 1 leaf/node) | 66 | `LargeCoalition` | 3.50 ms |
+| Caterpillar (fork-chain: chain + 1 leaf/node) | 128 | `LargeCoalition` | 7.12 ms |
 
 Caterpillar costs noticeably more per node than the pure chain at a
-comparable n (3.54 ms/66 vs 3.07 ms/65): every main-chain node has a real
-2-way sampling choice (continue the chain or take the leaf), so distinct
-samples visit more distinct prefixes and the coalition cache is warm less
-often — a real, expected difference in *workload*, not a representation-cost
-artifact. Unlike the chain, this shape doesn't maximize repetition across rounds the
+comparable n (3.50 ms/66 vs 4.33 ms/65 — note the chain figure here is *n=65*,
+one node larger): every main-chain node has a real 2-way sampling choice
+(continue the chain or take the leaf), so distinct samples visit more
+distinct prefixes and the coalition cache is warm less often — a real,
+expected difference in *workload*, not a representation-cost artifact.
+Unlike the chain, this shape doesn't maximize repetition across rounds the
 same way (above), since distinct samples share less structure with each
 other than a chain's samples do.
 
