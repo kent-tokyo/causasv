@@ -127,8 +127,9 @@ where
     F: Fn(&[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError>,
 {
     let mut unique_keys: Vec<Box<[u64]>> = Vec::new();
+    let mut coalition = LargeCoalition::empty(n);
     for s in samples {
-        let mut coalition = LargeCoalition::empty(n);
+        coalition.clear();
         unique_keys.push(coalition.snapshot_key());
         for &node in &s.ordering {
             coalition.insert(node);
@@ -190,6 +191,7 @@ where
         let mut wsq_comp = 0.0f64;
         let mut cache = LargeCoalitionCache::new(DEFAULT_LARGE_CACHE_MAX_ENTRIES);
         let mut scratch = SamplerScratch::new(n);
+        let mut coalition = LargeCoalition::empty(n);
         let mut global_max_log_w = f64::NEG_INFINITY;
         for _ in 0..config.n_samples {
             let log_q = sample_one_into(dag, &mut rng, &mut scratch, &base_in_deg);
@@ -210,7 +212,7 @@ where
             let w = (log_w - global_max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
-            let mut coalition = LargeCoalition::empty(n);
+            coalition.clear();
             let mut prev_value = value_cached_large(&mut cache, &value_fn, &coalition)?;
             for &node in &scratch.ordering {
                 coalition.insert(node);
@@ -249,6 +251,7 @@ where
                     let mut rng = make_rng(Some(wseed));
                     let mut cache = LargeCoalitionCache::new(DEFAULT_LARGE_CACHE_MAX_ENTRIES);
                     let mut scratch = SamplerScratch::new(n);
+                    let mut coalition = LargeCoalition::empty(n);
                     let mut local_num = vec![0.0f64; n];
                     let mut num_c = vec![0.0f64; n];
                     let mut denom = 0.0f64;
@@ -260,7 +263,7 @@ where
                         let w = (-log_q).exp();
                         kahan_add(&mut denom, &mut denom_c, w);
                         kahan_add(&mut wsq, &mut wsq_c, w * w);
-                        let mut coalition = LargeCoalition::empty(n);
+                        coalition.clear();
                         let mut prev_value = value_cached_large(&mut cache, &value_fn, &coalition)?;
                         for &node in &scratch.ordering {
                             coalition.insert(node);
@@ -293,6 +296,7 @@ where
             LargeCoalitionCache,
             StdRng,
             SamplerScratch,
+            LargeCoalition,
             Vec<f64>,
             f64,
             f64,
@@ -302,35 +306,36 @@ where
                 LargeCoalitionCache::new(DEFAULT_LARGE_CACHE_MAX_ENTRIES),
                 make_rng(None),
                 SamplerScratch::new(n),
+                LargeCoalition::empty(n),
                 vec![0.0f64; n],
                 0.0f64,
                 0.0f64,
             )
         };
-        let (_, _, _, acc_num, acc_denom, acc_wsq) = (0..config.n_samples)
+        let (_, _, _, _, acc_num, acc_denom, acc_wsq) = (0..config.n_samples)
             .into_par_iter()
             .try_fold(mk_state, |mut state, _| -> Result<UState, CausasvError> {
-                let (cache, rng, scratch, acc_num, acc_denom, acc_wsq) = &mut state;
+                let (cache, rng, scratch, coalition, acc_num, acc_denom, acc_wsq) = &mut state;
                 let log_q = sample_one_into(dag, rng, scratch, &base_in_deg);
                 let w = (-log_q).exp();
                 *acc_denom += w;
                 *acc_wsq += w * w;
-                let mut coalition = LargeCoalition::empty(n);
-                let mut prev_value = value_cached_large(cache, &value_fn, &coalition)?;
+                coalition.clear();
+                let mut prev_value = value_cached_large(cache, &value_fn, coalition)?;
                 for &node in &scratch.ordering {
                     coalition.insert(node);
-                    let with_value = value_cached_large(cache, &value_fn, &coalition)?;
+                    let with_value = value_cached_large(cache, &value_fn, coalition)?;
                     acc_num[node.0 as usize] += w * (with_value - prev_value);
                     prev_value = with_value;
                 }
                 Ok(state)
             })
             .try_reduce(mk_state, |mut a, b| {
-                for (x, y) in a.3.iter_mut().zip(&b.3) {
+                for (x, y) in a.4.iter_mut().zip(&b.4) {
                     *x += y;
                 }
-                a.4 += b.4;
                 a.5 += b.5;
+                a.6 += b.6;
                 Ok(a)
             })?;
         (acc_num, acc_denom, acc_wsq)
@@ -398,6 +403,7 @@ where
     let mut converged = false;
     let base_in_deg = dag.in_degrees();
     let mut scratch = SamplerScratch::new(n);
+    let mut coalition = LargeCoalition::empty(n);
     let mut global_max_log_w = f64::NEG_INFINITY;
 
     while total_samples < config.max_samples {
@@ -436,7 +442,7 @@ where
             let w = ((-sample.log_q) - global_max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
-            let mut coalition = LargeCoalition::empty(n);
+            coalition.clear();
             let mut prev_value = value_cached_large(&mut cache, &value_fn, &coalition)?;
             for &node in &sample.ordering {
                 coalition.insert(node);
@@ -551,6 +557,7 @@ where
     let mut remaining = config.n_samples;
     let base_in_deg = dag.in_degrees();
     let mut scratch = SamplerScratch::new(n);
+    let mut coalition = LargeCoalition::empty(n);
     let mut global_max_log_w = f64::NEG_INFINITY;
 
     while remaining > 0 {
@@ -585,7 +592,7 @@ where
             let w = ((-s.log_q) - global_max_log_w).exp();
             denominator += w;
             sum_w_sq += w * w;
-            let mut coalition = LargeCoalition::empty(n);
+            coalition.clear();
             let mut prev_value = *value_cache.get(coalition.words()).unwrap();
             for &node in &s.ordering {
                 coalition.insert(node);
@@ -659,6 +666,7 @@ where
     let mut converged = false;
     let base_in_deg = dag.in_degrees();
     let mut scratch = SamplerScratch::new(n);
+    let mut coalition = LargeCoalition::empty(n);
     let mut global_max_log_w = f64::NEG_INFINITY;
 
     while total_samples < config.max_samples {
@@ -699,7 +707,7 @@ where
             let w = ((-s.log_q) - global_max_log_w).exp();
             kahan_add(&mut denominator, &mut denom_comp, w);
             kahan_add(&mut sum_w_sq, &mut wsq_comp, w * w);
-            let mut coalition = LargeCoalition::empty(n);
+            coalition.clear();
             let mut prev_value = *value_cache.get(coalition.words()).unwrap();
             for &node in &s.ordering {
                 coalition.insert(node);

@@ -61,6 +61,16 @@ impl LargeCoalition {
         }
     }
 
+    /// Reset to the empty coalition, reusing the existing word `Vec`'s
+    /// allocation. Sampling loops hoist one `LargeCoalition` out of their
+    /// per-sample loop and `clear()` it between samples instead of calling
+    /// `empty()` again — the same allocation-reuse discipline `SamplerScratch`
+    /// already applies, and the n ≤ 64 path gets for free (a `u64` mask needs
+    /// no heap allocation at all).
+    pub(crate) fn clear(&mut self) {
+        self.words.fill(0);
+    }
+
     pub(crate) fn insert(&mut self, node: NodeId) {
         let i = node.0 as usize;
         debug_assert!(
@@ -141,6 +151,23 @@ mod tests {
         assert_eq!(
             c.to_sorted_nodes(),
             vec![NodeId(0), NodeId(64), NodeId(129)]
+        );
+    }
+
+    #[test]
+    fn clear_resets_to_empty_without_reallocating() {
+        let mut c = LargeCoalition::empty(130);
+        c.insert(NodeId(0));
+        c.insert(NodeId(129));
+        let words_ptr_before = c.words().as_ptr();
+        c.clear();
+        assert_eq!(c.count(), 0);
+        assert!(c.to_sorted_nodes().is_empty());
+        assert!(!c.contains(NodeId(0)) && !c.contains(NodeId(129)));
+        assert_eq!(
+            c.words().as_ptr(),
+            words_ptr_before,
+            "clear() must reuse the existing allocation, not reallocate"
         );
     }
 
