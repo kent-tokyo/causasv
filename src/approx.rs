@@ -33,9 +33,7 @@ where
     }
     let n = dag.node_count();
     if n > 64 {
-        return Err(CausasvError::InvalidConfig(format!(
-            "bitmask coalitions require n ≤ 64, got {n}"
-        )));
+        return crate::approx_large::approximate_asv_large(dag, value_fn, config);
     }
     let seed = config.seed;
     let parallel = config.parallel || seed.is_none();
@@ -254,9 +252,7 @@ where
     }
     let n = dag.node_count();
     if n > 64 {
-        return Err(CausasvError::InvalidConfig(format!(
-            "bitmask coalitions require n ≤ 64, got {n}"
-        )));
+        return crate::approx_large::approximate_asv_batched_large(dag, value_fn_batch, config);
     }
     let batch_size = config.batch_size.unwrap_or(256).max(1);
     let seed = config.seed;
@@ -399,9 +395,7 @@ where
     }
     let n = dag.node_count();
     if n > 64 {
-        return Err(CausasvError::InvalidConfig(format!(
-            "bitmask coalitions require n ≤ 64, got {n}"
-        )));
+        return crate::approx_large::approximate_asv_adaptive_large(dag, value_fn, config);
     }
 
     let mut rng = make_rng(config.seed);
@@ -575,9 +569,11 @@ where
     }
     let n = dag.node_count();
     if n > 64 {
-        return Err(CausasvError::InvalidConfig(format!(
-            "bitmask coalitions require n ≤ 64, got {n}"
-        )));
+        return crate::approx_large::approximate_asv_adaptive_batched_large(
+            dag,
+            value_fn_batch,
+            config,
+        );
     }
 
     let mut rng = make_rng(config.seed);
