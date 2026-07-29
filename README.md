@@ -464,19 +464,25 @@ Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [do
 | Chain | 20 | `approx` serial seeded (10k) | **19 ms** |
 | Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
 | Balanced tree | 31 | `approx` seeded (10k samples) | 83 ms |
-| Chain | 64 | `approx` serial seeded (2k, u64 backend) | 2.04 ms |
-| Chain | 65 | `approx` serial seeded (2k, large backend) | 2.86 ms |
-| Chain | 128 | `approx` serial seeded (2k, large backend) | 5.57 ms |
-| Chain | 256 | `approx` serial seeded (2k, large backend) | 12.4 ms |
+| Chain | 64 | `approx` serial seeded (2k, u64 backend) | 2.24 ms |
+| Chain | 65 | `approx` serial seeded (2k, large backend) | 3.07 ms |
+| Chain | 128 | `approx` serial seeded (2k, large backend) | 6.24 ms |
+| Chain | 256 | `approx` serial seeded (2k, large backend) | 15.6 ms |
 
 The n=64→65 row pair is the coalition-representation boundary this crate's
 `approx`/`approx_adaptive`/`approx_batched`/`approx_adaptive_batch` paths
 switch across (see "Where the n limits actually apply" above): per-sample
-cost grows smoothly (~40% at the boundary itself, then roughly linearly with
-n afterward) — there is no discontinuous cliff at n=65, just the expected
-cost of hashing/allocating a small `Box<[u64]>` key instead of a bare `u64`.
-See [docs/benchmarks.md](docs/benchmarks.md) for the full large-DAG table
-(seeded-parallel, adaptive, batched, and non-tree/collider shapes).
+cost grows smoothly (~37% at the boundary itself, then roughly linearly with
+n afterward) — there is no discontinuous cliff at n=65, just the cost of
+hashing a `&[u64]` slice instead of a bare `u64` on every cache lookup (the
+coalition buffer itself is reused across samples, not reallocated). The
+batched paths pay a larger step at this boundary (~+130% on a chain) for a
+different, deliberate reason — their n > 64 coalition cache is round-scoped
+rather than persisted across the whole call — see
+[docs/benchmarks.md](docs/benchmarks.md) for the full large-DAG table
+(seeded-parallel, adaptive, batched, and non-tree/collider shapes) and
+[docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64)
+for that tradeoff.
 
 This balanced tree at n=31 is deliberately benchmarked via `approx`, not
 `exact_tree`: its shape's per-node cost (176,020 — see

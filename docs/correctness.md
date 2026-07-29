@@ -124,11 +124,14 @@ correctness for n > 64 is verified two ways:
 1. **Backend parity** (`src/approx_large.rs`, internal `#[cfg(test)]` tests,
    plus a `proptest` generalization): on the *same* n ≤ 64 DAG, same seed,
    same sampling order, the n ≤ 64 (`u64`) and n > 64 (`LargeCoalition`)
-   backends must agree — bitwise, for the serial-seeded path, since both call
-   the sampler identically and neither cache ever evicts a written entry.
-   This is the primary correctness oracle: there is no independent *exact*
-   method for n > 64 to compare against (`exact_dag_sparse` and
-   `uniform_sparse` both still require n ≤ 63 — see below).
+   backends must agree — bitwise, for the serial-seeded, adaptive-serial,
+   batched, and adaptive-batched paths alike. This holds even though the
+   batched paths' caching differs between backends (see below) because
+   caching only changes how many times a value is *computed*, never what it
+   computes to, and the underlying value function is deterministic. This is
+   the primary correctness oracle: there is no independent *exact* method for
+   n > 64 to compare against (`exact_dag_sparse` and `uniform_sparse` both
+   still require n ≤ 63 — see below).
 2. **Closed-form additive check** (`tests/large_dag_approx_tests.rs`): for
    `v(S) = |S|`, the true ASV is exactly 1.0 per node on *any* DAG, so a
    65/128/256-node chain gives a direct accuracy check without needing an
@@ -140,16 +143,34 @@ cache has no such ceiling, and for large, sparsely-branching DAGs, distinct IS
 samples rarely revisit the same prefix past the first couple of steps — an
 unbounded cache would grow roughly `n` entries per sample at a vanishing hit
 rate. `approximate`/`approximate_adaptive` use a `LargeCoalitionCache` capped
-at a fixed entry count (lookups keep working past the cap; new inserts are
-just skipped, so correctness never depends on the cap). The batched paths
-(`approximate_batched`/`approximate_adaptive_batched`) go further and don't
-persist a cache across sampling rounds at all — each round's unique
-coalitions are resolved via `value_fn_batch`, chunked if they exceed an
-internal cap, and then discarded, so memory stays proportional to
+at a fixed entry count *per cache instance* (lookups keep working past the
+cap; new inserts are just skipped, so correctness never depends on the cap).
+"Per instance" matters for the parallel paths: seeded-parallel builds one
+cache per worker thread, so aggregate memory is (roughly) the cap × thread
+count; unseeded-parallel builds one cache per Rayon fold split, which is not
+guaranteed to equal the thread count.
+
+The batched paths (`approximate_batched`/`approximate_adaptive_batched`) go
+further and don't persist a cache across sampling rounds at all — each
+round's unique coalitions are resolved via `value_fn_batch`, chunked if they
+exceed an internal cap, and then discarded, so memory stays proportional to
 `n × batch_size` for that round rather than to the run's total sample count.
+**This has a real cost, not just a memory-safety benefit**: on a DAG shape
+with high structural repetition across rounds (a chain has only one valid
+ordering, so every round revisits the *same* n+1 coalitions), the n ≤ 64
+batched path calls `value_fn_batch` once total after the cache warms up,
+while the n > 64 path calls it once *per round* — for an expensive value
+function (e.g. a Python model callback), that is a real, user-visible cost
+this design accepts in exchange for not growing memory with the run's total
+sample count. A bounded *persistent* cache (evicting instead of just
+declining new inserts) would also satisfy "not unbounded" while avoiding this
+— see the measured gap in docs/benchmarks.md and the discussion in this PR.
+
 See [docs/benchmarks.md](docs/benchmarks.md) for the measured n=64→65
-boundary cost (a smooth increase from the `Box<[u64]>` key overhead, not a
-cliff) and the cache-bound stress test in `src/approx_large.rs`.
+boundary cost (a smooth increase, not a cliff — driven by hashing/comparing a
+`&[u64]` slice on every cache lookup instead of a bare `u64`, since the
+coalition buffer itself is reused across samples rather than reallocated) and
+the cache-bound stress test in `src/approx_large.rs`.
 
 **`exact_tree`'s cost is shape-dependent, not just a function of node count.**
 A node's cost is the product of every ancestor level's side-sibling order-ideal
