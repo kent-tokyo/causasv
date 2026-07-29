@@ -108,9 +108,9 @@ switch from a `u64` bitmask coalition to a growable word-vector bitset
 (`LargeCoalition`, `src/coalition.rs`) for n > 64 — see
 [correctness.md](correctness.md#large-dag-approximate-paths-n--64). These
 numbers check that switch doesn't introduce a discontinuous cost jump. All
-numbers below are from a single measurement pass on this machine; per
-[correctness.md](correctness.md)'s own noise caveat for `cargo bench` here,
-treat deltas under ~15% as within run-to-run noise, not signal.
+numbers below are from a single measurement pass on this machine; `cargo bench`
+here is noisy run-to-run (thermal throttling), so treat deltas under ~15% as
+within run-to-run noise, not signal.
 
 #### Chain, serial seeded (2k samples)
 
