@@ -17,13 +17,22 @@ Versions follow [Semantic Versioning](https://semver.org/).
   never touched a bitmask, so the fix is scoped to the coalition representation:
   `src/coalition.rs` adds `LargeCoalition`, a growable word-vector bitset (`ceil(n/64)` `u64`
   words), and `src/approx_large.rs` mirrors the four approximate estimators over it — with a
-  bounded `LargeCoalitionCache` (persistent, entry-capped) on the non-batched paths and a
-  round-scoped cache (not persisted across sampling batches) on the batched paths, instead of
-  an unbounded `HashMap<u64, f64>`. The existing n ≤ 64 fast path is unchanged; each `_large`
-  function is dispatched to only when n > 64. `exact`/`exact_dag`/`exact_dag_sparse`/
-  `uniform_sparse`/`uniform_sparse_adaptive` are unaffected and remain n ≤ 63/64 (they still
-  pack a coalition into a `u64` for their dense/sparse DP or zero-variance sampling, which is
-  a structural limit, not a preflight choice).
+  bounded, admission-capped `LargeCoalitionCache` shared across the whole call on every path,
+  including the batched ones (round-level dedup still runs first; only a coalition never seen
+  before in the run reaches `value_fn_batch`), instead of an unbounded `HashMap<u64, f64>`. The
+  existing n ≤ 64 fast path is unchanged; each `_large` function is dispatched to only when
+  n > 64. `exact`/`exact_dag`/`exact_dag_sparse`/`uniform_sparse`/`uniform_sparse_adaptive` are
+  unaffected and remain n ≤ 63/64 (they still pack a coalition into a `u64` for their
+  dense/sparse DP or zero-variance sampling, which is a structural limit, not a preflight
+  choice).
+- `approximate_batched`/`approximate_adaptive_batched`/`approximate_uniform_sparse_adaptive_batched`
+  (small, n ≤ 64 path) zipped a `value_fn_batch` result against the coalitions it was asked to
+  evaluate without checking the lengths matched first — a callback returning too few values
+  left the extra coalitions uncached (and could panic later at an `unwrap()` lookup); one
+  returning too many silently dropped the tail. A shared `validate_batch_result_len` helper
+  (`src/error.rs`) now checks this before zipping, on both the small and large (n > 64)
+  backends, turning a length mismatch into an explicit `CausasvError::ValueFunctionError`
+  everywhere instead of only on the n > 64 path (which already had this check).
 - `auto()`/`auto_quality()`'s rooted-tree fallback previously always reported
   `fallback_reason: "tree shape exceeded exact_tree's feasibility budget"` when falling back
   to `approximate`/`approximate_adaptive` — accurate for a bushy tree that blew
@@ -43,6 +52,12 @@ Versions follow [Semantic Versioning](https://semver.org/).
   128/256-node smoke tests; seeded-parallel determinism; `value_fn_batch` validation (short
   return, long return, `Err` propagation, and NaN pass-through are all explicit, not a silent
   `zip`-truncation) for n > 64.
+- `tests/approx_batch_tests.rs`: the same `value_fn_batch` length-mismatch checks for the
+  n ≤ 64 small path (`approximate_batched`/`approximate_adaptive_batched`/
+  `approximate_uniform_sparse_adaptive_batched`).
+- `persistent_cache_collapses_batched_calls_on_chain` (`src/approx_large.rs`, internal): drives
+  a 65-node chain through 10 sampling rounds and asserts `value_fn_batch` is reached exactly
+  once, not once per round, confirming the batched cache is actually reused across rounds.
 - Criterion benchmarks for the n=64→65 coalition-representation boundary (chain, seeded
   parallel, adaptive, batched, adaptive-batched) plus non-tree/collider (diamond-chain) and
   fork-chain (caterpillar) shapes at n ≈ 65/128 — see `docs/benchmarks.md`.

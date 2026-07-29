@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use crate::asv::AsvResult;
 use crate::cache::value_cached;
-use crate::error::CausasvError;
+use crate::error::{CausasvError, validate_batch_result_len};
 use crate::graph::{Dag, NodeId};
 use crate::numerics::kahan_add;
 use crate::sampler::{
@@ -309,6 +309,7 @@ where
                 })
                 .collect();
             let values = value_fn_batch(&coalitions)?;
+            validate_batch_result_len(uncached.len(), values.len())?;
             for (&mask, val) in uncached.iter().zip(values.iter()) {
                 cache.insert(mask, *val);
             }
@@ -631,6 +632,7 @@ where
                 })
                 .collect();
             let values = value_fn_batch(&coalitions)?;
+            validate_batch_result_len(uncached.len(), values.len())?;
             for (&mask, val) in uncached.iter().zip(values.iter()) {
                 cache.insert(mask, *val);
             }
@@ -1108,6 +1110,7 @@ where
                 })
                 .collect();
             let values = value_fn_batch(&coalitions)?;
+            validate_batch_result_len(uncached.len(), values.len())?;
             for (&mask, val) in uncached.iter().zip(values.iter()) {
                 value_cache.insert(mask, *val);
             }

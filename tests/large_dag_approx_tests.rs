@@ -371,9 +371,9 @@ fn two_chains_65_unseeded_parallel_finite() {
 //
 // No silent zip-truncation: a length mismatch is an explicit
 // `CausasvError::ValueFunctionError`, not a panic or a quietly-dropped tail.
-// (The pre-existing small-path batched functions in `approx.rs` still zip
-// silently and can panic on a short return — that is a separate, pre-existing
-// issue out of scope for this fix; see the PR description.)
+// The small-path (n ≤ 64) batched functions in `approx.rs` share the same
+// `validate_batch_result_len` check — see the equivalent tests in
+// `tests/approx_batch_tests.rs`.
 
 #[test]
 fn batched_value_fn_short_return_is_explicit_error() {

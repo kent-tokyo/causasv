@@ -28,7 +28,7 @@ use rayon::prelude::*;
 
 use crate::asv::AsvResult;
 use crate::coalition::{LargeCoalition, words_to_sorted_nodes};
-use crate::error::CausasvError;
+use crate::error::{CausasvError, validate_batch_result_len};
 use crate::graph::{Dag, NodeId};
 use crate::numerics::kahan_add;
 use crate::sampler::{
@@ -166,13 +166,7 @@ where
     for chunk in misses.chunks(MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH) {
         let coalitions: Vec<Vec<NodeId>> = chunk.iter().map(|k| words_to_sorted_nodes(k)).collect();
         let values = value_fn_batch(&coalitions)?;
-        if values.len() != chunk.len() {
-            return Err(CausasvError::ValueFunctionError(format!(
-                "value_fn_batch returned {} values for {} coalitions",
-                values.len(),
-                chunk.len()
-            )));
-        }
+        validate_batch_result_len(chunk.len(), values.len())?;
         for (key, val) in chunk.iter().zip(values) {
             value_cache.insert(key.clone(), val);
             cache.insert(key.clone(), val);
