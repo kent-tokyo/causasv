@@ -98,6 +98,59 @@ Before trusting an approximate result:
 `info["selected_method"]`. If `exact_dag_sparse` hits the memory or overflow
 limit, it falls back to `approx` and sets `info["fallback_from"]`.
 
+## Large-DAG approximate paths (n > 64)
+
+`approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch` have
+no node-count limit. The frontier sampler that drives all of them
+(`sample_one_into`) never represents a coalition as a bitmask at all — it only
+needs `Vec`-sized scratch space — so the only place a coalition needs a
+concrete representation is where a sample's growing prefix is turned into the
+`Vec<NodeId>` handed to a value function, and where that prefix is used as a
+cache key.
+
+- For n ≤ 64, that representation is a single `u64` (`1u64 << node.0`).
+- For n > 64, it is a growable word-vector bitset (`LargeCoalition` in
+  `src/coalition.rs`): `ceil(n / 64)` `u64` words, word `w` holding the bits
+  for nodes `[64w, 64w+64)`. Ascending `NodeId` order falls out of the
+  word/bit layout directly (word index, then bit index), so there is no
+  `HashSet`/`HashMap` iteration order to leak into the coalitions a value
+  function sees.
+
+Both representations are fed by the *same* sampler and the *same*
+self-normalized IS math (log-weight rescaling, Kahan summation, ESS/stderr
+formulas) — only the coalition type and its cache differ. Because of that,
+correctness for n > 64 is verified two ways:
+
+1. **Backend parity** (`src/approx_large.rs`, internal `#[cfg(test)]` tests,
+   plus a `proptest` generalization): on the *same* n ≤ 64 DAG, same seed,
+   same sampling order, the n ≤ 64 (`u64`) and n > 64 (`LargeCoalition`)
+   backends must agree — bitwise, for the serial-seeded path, since both call
+   the sampler identically and neither cache ever evicts a written entry.
+   This is the primary correctness oracle: there is no independent *exact*
+   method for n > 64 to compare against (`exact_dag_sparse` and
+   `uniform_sparse` both still require n ≤ 63 — see below).
+2. **Closed-form additive check** (`tests/large_dag_approx_tests.rs`): for
+   `v(S) = |S|`, the true ASV is exactly 1.0 per node on *any* DAG, so a
+   65/128/256-node chain gives a direct accuracy check without needing an
+   oracle at all.
+
+**Bounded, not unbounded, caching.** The n ≤ 64 path's `HashMap<u64, f64>`
+cache is implicitly bounded (at most `2^n` distinct keys). A `Box<[u64]>`-keyed
+cache has no such ceiling, and for large, sparsely-branching DAGs, distinct IS
+samples rarely revisit the same prefix past the first couple of steps — an
+unbounded cache would grow roughly `n` entries per sample at a vanishing hit
+rate. `approximate`/`approximate_adaptive` use a `LargeCoalitionCache` capped
+at a fixed entry count (lookups keep working past the cap; new inserts are
+just skipped, so correctness never depends on the cap). The batched paths
+(`approximate_batched`/`approximate_adaptive_batched`) go further and don't
+persist a cache across sampling rounds at all — each round's unique
+coalitions are resolved via `value_fn_batch`, chunked if they exceed an
+internal cap, and then discarded, so memory stays proportional to
+`n × batch_size` for that round rather than to the run's total sample count.
+See [docs/benchmarks.md](docs/benchmarks.md) for the measured n=64→65
+boundary cost (a smooth increase from the `Box<[u64]>` key overhead, not a
+cliff) and the cache-bound stress test in `src/approx_large.rs`.
+
 **`exact_tree`'s cost is shape-dependent, not just a function of node count.**
 A node's cost is the product of every ancestor level's side-sibling order-ideal
 count, so a tree with several wide/deep branches can reach billions of

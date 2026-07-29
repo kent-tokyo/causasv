@@ -5,6 +5,59 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- `approximate`/`approximate_adaptive`/`approximate_batched`/`approximate_adaptive_batched`
+  (and, transitively, `auto()`/`auto_quality()`'s fallback into them, and the Python
+  `explain()`/`explain_quality()`/`explain_quality_batch()` paths that call them) rejected
+  any DAG with n > 64 nodes with `InvalidConfig`, contradicting the public docs' "works for
+  any DAG size" claim. Root cause: a sample's growing prefix coalition was represented as a
+  single `u64` bitmask, which cannot address a `NodeId >= 64`. The frontier sampler itself
+  never touched a bitmask, so the fix is scoped to the coalition representation:
+  `src/coalition.rs` adds `LargeCoalition`, a growable word-vector bitset (`ceil(n/64)` `u64`
+  words), and `src/approx_large.rs` mirrors the four approximate estimators over it — with a
+  bounded `LargeCoalitionCache` (persistent, entry-capped) on the non-batched paths and a
+  round-scoped cache (not persisted across sampling batches) on the batched paths, instead of
+  an unbounded `HashMap<u64, f64>`. The existing n ≤ 64 fast path is unchanged; each `_large`
+  function is dispatched to only when n > 64. `exact`/`exact_dag`/`exact_dag_sparse`/
+  `uniform_sparse`/`uniform_sparse_adaptive` are unaffected and remain n ≤ 63/64 (they still
+  pack a coalition into a `u64` for their dense/sparse DP or zero-variance sampling, which is
+  a structural limit, not a preflight choice).
+- `auto()`/`auto_quality()`'s rooted-tree fallback previously always reported
+  `fallback_reason: "tree shape exceeded exact_tree's feasibility budget"` when falling back
+  to `approximate`/`approximate_adaptive` — accurate for a bushy tree that blew
+  `ExactTreeConfig`'s cost budget, but wrong for a tree with n > 64 whose real failure cause
+  is `exact_tree`'s own bitmask limit (previously unreachable, since `approximate()` itself
+  used to error out first for n > 64, so `auto()` never got as far as attaching this message
+  to a successful result). Now distinguishes the two causes based on which `exact_tree` error
+  variant actually fired.
+
+### Added
+- Backend-parity tests (`src/approx_large.rs`, internal, plus a `proptest` generalization):
+  on the same n ≤ 64 DAG/seed/sampling order, the n ≤ 64 (`u64`) and n > 64
+  (`LargeCoalition`) backends produce bitwise-identical results for the serial-seeded path —
+  the primary correctness oracle for n > 64, since no independent exact method exists there.
+- `tests/large_dag_approx_tests.rs`: 65-node additive-chain and non-tree (two-disjoint-chains)
+  accuracy checks across all four approximate entry points plus `auto`/`auto_quality`;
+  128/256-node smoke tests; seeded-parallel determinism; `value_fn_batch` validation (short
+  return, long return, `Err` propagation, and NaN pass-through are all explicit, not a silent
+  `zip`-truncation) for n > 64.
+- Criterion benchmarks for the n=64→65 coalition-representation boundary (chain, seeded
+  parallel, adaptive, batched, adaptive-batched) plus non-tree/collider (diamond-chain) and
+  fork-chain (caterpillar) shapes at n ≈ 65/128 — see `docs/benchmarks.md`.
+
+### Docs
+- `docs/correctness.md`: new "Large-DAG approximate paths (n > 64)" section explaining the
+  coalition representation, why bounded (not unbounded) caching is used, and how correctness
+  is verified without an independent exact oracle.
+- README / README_ja / README_zh: replaced the "n > 64 rooted trees have no working method"
+  limitation with an accurate description (`approx`/`approx_adaptive`/`approx_batched`/
+  `approx_adaptive_batch` have no node-count limit; `exact_dag_sparse`/`uniform_sparse`
+  remain n ≤ 63 structurally); added measured n=64/65/128/256 timings.
+- `ROADMAP.md`: full rewrite — it predated the CPDAG/strong-d-convex-hull work in 0.8.7/0.8.8
+  and still listed this PR's fix as a hypothetical future item.
+
 ## [0.8.8] — 2026-07-27
 
 ### Added

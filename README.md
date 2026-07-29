@@ -304,6 +304,11 @@ values = ASVExplainer(dag).explain(value_fn, method="auto")
 
 `auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree` if its shape fits `ExactTreeConfig`'s cost budget, else `exact_dag_sparse` if that's feasible (n ≤ 63, order ideals ≤ 250k preflight), else `approx`; n ≤ 20 → `exact_dag_sparse` if order ideals fit half the dense state count else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; 28 < n ≤ 63 → `exact_dag_sparse` if order ideals ≤ 250k (sparse preflight), else `approx`; n > 63 → `approx`.
 
+**Where the n limits actually apply:**
+- `exact` / `exact_tree` / `exact_dag`: small, method-specific n limits (~8 for brute-force; shape-dependent for `exact_tree`; 20 for dense DP) — these use a dense `2^n`-style representation and are not going to be lifted.
+- `exact_dag_sparse` / `uniform_sparse` / `uniform_sparse_adaptive`: n ≤ 63 — sparse order-ideal DP still packs a coalition into a `u64`, so this ceiling is structural, not a preflight choice.
+- `approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch`: **no node-count limit.** For n > 64, coalitions use a growable bitset internally instead of a `u64` mask (see `src/coalition.rs`); the practical constraints for large DAGs are `n_samples`, the cost of your value function, and the coalition-cache memory budget — not `n`.
+
 `exact_tree`'s cost depends on tree *shape*, not just n: a node with several
 wide/deep sibling subtrees forces a large cartesian product. `exact_tree`
 (and `auto`/`auto_quality`) run an O(n) preflight (`ExactTreeConfig`, default
@@ -459,6 +464,19 @@ Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [do
 | Chain | 20 | `approx` serial seeded (10k) | **19 ms** |
 | Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
 | Balanced tree | 31 | `approx` seeded (10k samples) | 83 ms |
+| Chain | 64 | `approx` serial seeded (2k, u64 backend) | 2.04 ms |
+| Chain | 65 | `approx` serial seeded (2k, large backend) | 2.86 ms |
+| Chain | 128 | `approx` serial seeded (2k, large backend) | 5.57 ms |
+| Chain | 256 | `approx` serial seeded (2k, large backend) | 12.4 ms |
+
+The n=64→65 row pair is the coalition-representation boundary this crate's
+`approx`/`approx_adaptive`/`approx_batched`/`approx_adaptive_batch` paths
+switch across (see "Where the n limits actually apply" above): per-sample
+cost grows smoothly (~40% at the boundary itself, then roughly linearly with
+n afterward) — there is no discontinuous cliff at n=65, just the expected
+cost of hashing/allocating a small `Box<[u64]>` key instead of a bare `u64`.
+See [docs/benchmarks.md](docs/benchmarks.md) for the full large-DAG table
+(seeded-parallel, adaptive, batched, and non-tree/collider shapes).
 
 This balanced tree at n=31 is deliberately benchmarked via `approx`, not
 `exact_tree`: its shape's per-node cost (176,020 — see
@@ -472,7 +490,7 @@ Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
 ## Current limitations
 
 - Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
-- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1) **and** a shape whose per-node combinatorial cost fits `ExactTreeConfig`'s budget (default 50,000 / 200,000 — see [docs/correctness.md](docs/correctness.md#exact-method-bounds)); a small-n but wide/deep tree can still be rejected. For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, use `approx`. A rooted tree with n > 64 currently has no working exact *or* approximate method (`approximate`'s own bitmask cap also requires n ≤ 64) — tracked separately from the `exact_tree` shape guard.
+- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1) **and** a shape whose per-node combinatorial cost fits `ExactTreeConfig`'s budget (default 50,000 / 200,000 — see [docs/correctness.md](docs/correctness.md#exact-method-bounds)); a small-n but wide/deep tree can still be rejected. For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, or any DAG with n > 64 (including rooted trees `exact_tree` rejects on size alone), use `approx` / `approx_adaptive` / `approx_adaptive_batch` — these have no node-count limit; `auto`/`auto_quality` already fall back to them automatically.
 - Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
 - No built-in causal discovery, model training, or automatic graph construction.
 - `strong_d_convex_hull`'s collapsibility guarantee is proven (by the paper it implements) only for non-adjacent target-variable pairs under Gaussian/multinomial, positive, faithful distributions — see [docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md#scope-and-assumptions). No IDA/effect-estimation API is implemented on top of the reduced graph yet.

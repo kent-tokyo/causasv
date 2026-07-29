@@ -265,6 +265,11 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 `auto` 调度：n ≤ 8 → `exact`；有根树 → 若形状符合 `ExactTreeConfig` 的成本预算则 `exact_tree`，否则若可行（n ≤ 63 且顺序理想数 ≤ 250k 预检）则 `exact_dag_sparse`，否则 `approx`；n ≤ 20 → 若顺序理想数不超过密集状态数的一半则 `exact_dag_sparse` 否则 `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 若顺序理想数 ≤ 250k（稀疏预检）则 `exact_dag_sparse` 否则 `approx`；n > 63 → `approx`。
 
+**n 的上限实际作用于何处：**
+- `exact` / `exact_tree` / `exact_dag`：各自较小、方法特定的 n 上限（暴力法约为 8；`exact_tree` 依形状而定；密集 DP 为 20）。它们使用 `2^n` 型密集表示，此上限不会被取消。
+- `exact_dag_sparse` / `uniform_sparse` / `uniform_sparse_adaptive`：n ≤ 63 —— 稀疏顺序理想 DP 仍将联盟打包进 `u64`，因此该上限是结构性的，而非预检策略的选择。
+- `approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch`：**没有节点数限制。** 对于 n > 64，联盟内部使用可增长的位集表示，而非 `u64` 掩码（见 `src/coalition.rs`）。大型 DAG 的实际限制因素是 `n_samples`、值函数的开销以及联盟缓存的内存预算，而非 n 本身。
+
 `exact_tree` 的成本不仅取决于节点数 n，还取决于树的*形状*：一个拥有多个宽/深兄弟子树的节点会产生巨大的笛卡尔积。`exact_tree`（以及 `auto`/`auto_quality`）会在实际枚举前运行 O(n) 的预检（`ExactTreeConfig`，默认预算为单节点 50,000 项/总计 200,000 项），超出预算时返回 `ExactTreeBudgetExceeded` 或回退，而不是真的去枚举。完整说明见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)，触发该修复的具体案例见 [issue #36](https://github.com/kent-tokyo/causasv/issues/36)。
 
 `exact_dag_sparse` 只访问有效顺序理想（所有节点的父节点也存在的集合）。对于稀疏 DAG，这可能比 2^n 少几个数量级，返回 `n_order_ideals`、`state_ratio` 和 `memory_mb` 诊断信息。
@@ -335,6 +340,12 @@ Apple M 系列（arm64，release 构建）部分结果。`v(S) = |S|`。完整�
 | 链式 | 20 | `approx` 串行种子（10k） | **19 ms** |
 | 链式 | 20 | `approx` 并行 4 线程（10k） | 7.4 ms |
 | 平衡树 | 31 | `approx` 种子（10k 采样） | 83 ms |
+| 链式 | 64 | `approx` 串行种子（2k，u64 后端） | 2.04 ms |
+| 链式 | 65 | `approx` 串行种子（2k，large 后端） | 2.86 ms |
+| 链式 | 128 | `approx` 串行种子（2k，large 后端） | 5.57 ms |
+| 链式 | 256 | `approx` 串行种子（2k，large 后端） | 12.4 ms |
+
+n=64→65 这一行是联盟表示切换的边界（见上文"n 的上限实际作用于何处"）：每个样本的成本平滑增长（边界本身增加约 40%，之后大致随 n 线性增长），n=65 处没有不连续的断层——只是用小型 `Box<[u64]>` 键代替裸 `u64` 所增加的哈希/分配开销。并行、自适应、批量以及非树形状的测量结果见 [docs/benchmarks.md](docs/benchmarks.md)。
 
 这棵 n=31 的平衡树刻意使用 `approx` 而非 `exact_tree` 进行基准测试：该形状的单节点成本（176,020 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）超出了 `ExactTreeConfig` 的默认预算，实际运行 `exact_tree` 需要约 20-25 秒。`auto`/`auto_quality` 通过 O(n) 预检自动识别这一点并回退，而不会真的运行数十秒。
 
@@ -343,7 +354,7 @@ Apple M 系列（arm64，release 构建）部分结果。`v(S) = |S|`。完整�
 ## 当前限制
 
 - 暴力精确 ASV 对线性扩展数量呈指数级增长；仅适用于 n ≤ ~8 的节点。
-- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1），**并且**其单节点组合成本需符合 `ExactTreeConfig` 的预算（默认 50,000 / 200,000 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）；n 较小但宽/深的树仍可能被拒绝。n ≤ 20 的一般 DAG 使用 `exact_dag`，n ≤ 28 的稀疏 DAG 使用 `exact_dag_sparse`，更大的 DAG 使用 `approx`。n > 64 的有根树目前没有可用的精确或近似方法（`approximate` 自身的位掩码上限同样要求 n ≤ 64）——这是与 `exact_tree` 形状保护机制分开跟踪的已知缺口。
+- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1），**并且**其单节点组合成本需符合 `ExactTreeConfig` 的预算（默认 50,000 / 200,000 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）；n 较小但宽/深的树仍可能被拒绝。n ≤ 20 的一般 DAG 使用 `exact_dag`，n ≤ 28 的稀疏 DAG 使用 `exact_dag_sparse`。更大的 DAG，以及仅因节点数而被 `exact_tree` 拒绝的 n > 64 有根树，请使用 `approx` / `approx_adaptive` / `approx_adaptive_batch`——它们没有节点数上限，`auto`/`auto_quality` 已经会自动回退到它们。
 - 没有内置的因果发现、模型训练或自动图构建。
 
 ## 与其他工具的比较

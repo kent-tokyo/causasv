@@ -101,6 +101,74 @@ Same seed + same num_threads → bitwise-identical results across runs.
 (defaults: rel_tol=0.01, ess_ratio_min=0.10). For an additive value function on a chain,
 convergence is fast and the adaptive method uses far fewer samples.
 
+### Large-DAG approximate paths (n > 64) — coalition-representation boundary
+
+`approximate`/`approximate_adaptive`/`approximate_batched`/`approximate_adaptive_batched`
+switch from a `u64` bitmask coalition to a growable word-vector bitset
+(`LargeCoalition`, `src/coalition.rs`) for n > 64 — see
+[correctness.md](correctness.md#large-dag-approximate-paths-n--64). These
+numbers check that switch doesn't introduce a discontinuous cost jump.
+
+#### Chain, serial seeded (2k samples)
+
+| n | Backend | Time |
+|---|---------|------|
+| 64 | `u64` | 2.04 ms |
+| 65 | `LargeCoalition` | 2.86 ms |
+| 128 | `LargeCoalition` | 5.57 ms |
+| 256 | `LargeCoalition` | 12.4 ms |
+
+64→65 is a **+40% step** (entirely attributable to hashing/allocating a small
+`Box<[u64]>` cache key instead of a bare `u64` on every cache miss — a chain
+has only one valid topological ordering, so every sample hits the *same*
+n+1 prefixes and the cache is ~100% warm after the first sample either way),
+then cost grows roughly linearly with n from there. No cliff.
+
+#### Chain, seeded parallel (4 threads, 10k samples)
+
+| n | Backend | Time |
+|---|---------|------|
+| 64 | `u64` | 3.50 ms |
+| 65 | `LargeCoalition` | 6.54 ms |
+
+The parallel path's jump (+87%) is larger than the serial path's: each of the
+4 workers builds its own `LargeCoalitionCache`, so the same per-key overhead
+is paid 4× over, once per worker — expected given `DEFAULT_LARGE_CACHE_MAX_ENTRIES`
+is a per-cache-instance cap (see correctness.md), not an aggregate one. Still
+a smooth, explainable step, not a cliff.
+
+#### Non-chain shapes (genuine IS variance, not a single deterministic ordering)
+
+| Shape | n | Backend | Time (2k samples, serial seeded) |
+|-------|---|---------|-----------------------------------|
+| Diamond-chain (layered, collider sinks) | 64 | `u64` | 2.01 ms |
+| Diamond-chain (layered, collider sinks) | 127 | `LargeCoalition` | 5.58 ms |
+| Caterpillar (fork-chain: chain + 1 leaf/node) | 66 | `LargeCoalition` | 3.51 ms |
+| Caterpillar (fork-chain: chain + 1 leaf/node) | 128 | `LargeCoalition` | 7.11 ms |
+
+Caterpillar costs noticeably more per node than the pure chain at a
+comparable n (3.51 ms/66 vs 2.86 ms/65): every main-chain node has a real
+2-way sampling choice (continue the chain or take the leaf), so distinct
+samples visit more distinct prefixes and the coalition cache is warm less
+often — a real, expected difference in *workload*, not a representation-cost
+artifact.
+
+#### Cache boundedness (not a Criterion benchmark — see `src/approx_large.rs`)
+
+`LargeCoalitionCache::len()` is asserted `<= max_entries` after 5,000 samples
+on a fully disconnected (antichain) 80-node DAG — the worst case for cache
+growth, since no two samples share any prefix past the empty coalition. This
+confirms memory does not scale with total sample count, only with the
+configured cap (`DEFAULT_LARGE_CACHE_MAX_ENTRIES`, currently 50,000 per cache
+instance). The batched large paths don't carry a persistent cache across
+sampling rounds at all (see correctness.md), so their memory is bounded by
+`n × batch_size` per round instead.
+
+Reproduce the timing numbers above with:
+```
+cargo bench --bench asv_bench -- 'approx_boundary_chain|approx_diamond_chain_large|approx_caterpillar_large'
+```
+
 ### Prefix-mask cache lookup dedup (2026-07-03)
 
 Every sampling loop looked up both `without` (the coalition before adding the current
