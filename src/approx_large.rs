@@ -44,10 +44,14 @@ use crate::sampler::{
 /// bound: for large, sparsely-branching DAGs, distinct IS samples rarely
 /// revisit the same prefix past the first couple of steps, so letting the
 /// cache grow forever would add ~n entries per sample at a vanishing hit
-/// rate — memory cost would dominate any lookup savings. This constant is
-/// chosen so that even the parallel paths, which build one cache per worker
-/// thread, stay in the tens-of-MB range in aggregate (entries × threads ×
-/// ~100 bytes/entry); see docs/benchmarks.md for measured hit rates by shape.
+/// rate — memory cost would dominate any lookup savings. This constant is a
+/// per-cache-instance cap, not an aggregate one: seeded-parallel builds one
+/// `LargeCoalitionCache` per worker thread, and unseeded-parallel builds one
+/// per Rayon fold split (not guaranteed to equal the thread count), so
+/// aggregate memory across a parallel run is roughly this cap × however many
+/// instances exist, not this cap alone. Chosen so a handful of instances stay
+/// in the tens-of-MB range in aggregate (entries × instances × ~100
+/// bytes/entry); see docs/benchmarks.md for measured hit rates by shape.
 const DEFAULT_LARGE_CACHE_MAX_ENTRIES: usize = 50_000;
 
 /// Cap on distinct coalitions resolved by one `value_fn_batch` call in the
@@ -797,7 +801,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::approx::{approximate_asv, approximate_asv_adaptive};
+    use crate::approx::{
+        approximate_asv, approximate_asv_adaptive, approximate_asv_adaptive_batched,
+        approximate_asv_batched,
+    };
     use proptest::prelude::*;
 
     fn make_chain(n: usize) -> Dag {
@@ -824,6 +831,13 @@ mod tests {
 
     fn weighted(s: &[NodeId]) -> Result<f64, CausasvError> {
         Ok(s.iter().map(|n| (n.0 + 1) as f64).sum())
+    }
+
+    fn weighted_batch(coalitions: &[Vec<NodeId>]) -> Result<Vec<f64>, CausasvError> {
+        Ok(coalitions
+            .iter()
+            .map(|c| c.iter().map(|n| (n.0 + 1) as f64).sum())
+            .collect())
     }
 
     /// Backend parity (Phase 7D): on the SAME n ≤ 64 DAG, same seed, same
@@ -869,6 +883,102 @@ mod tests {
         assert_eq!(small.n_samples, large.n_samples);
         for (&node, &v_small) in &small.values {
             assert_eq!(v_small.to_bits(), large.values[&node].to_bits());
+        }
+    }
+
+    /// Backend parity for the batched paths. This matters more than it might
+    /// look: `approximate_asv_batched`/`approximate_asv_adaptive_batched` are
+    /// the only large-DAG functions with genuinely new machinery beyond a
+    /// coalition-representation swap (snapshot → sort → dedup → chunk →
+    /// `words_to_sorted_nodes` round-trip → key lookup, all absent from the
+    /// serial paths above) — a bug in the key round-trip or the dedup would
+    /// not be caught by `backend_parity_serial_seeded_diamond` alone. Both
+    /// backends draw the identical sample sequence for a given seed/n_samples/
+    /// batch_size and call a deterministic value function, so despite the
+    /// large path's round-scoped (not persistent) cache, bitwise parity still
+    /// holds: caching only affects how many times a value is *computed*, never
+    /// what it computes to.
+    #[test]
+    fn backend_parity_batched_diamond() {
+        let dag = make_diamond();
+        let cfg = || SamplingConfig::new(500).with_seed(7).with_batch_size(64);
+        let small = approximate_asv_batched(&dag, weighted_batch, cfg()).unwrap();
+        let large = approximate_asv_batched_large(&dag, weighted_batch, cfg()).unwrap();
+        for (&node, &v_small) in &small.values {
+            let v_large = large.values[&node];
+            assert_eq!(
+                v_small.to_bits(),
+                v_large.to_bits(),
+                "node {node:?}: small={v_small}, large={v_large} (expected bitwise parity)"
+            );
+        }
+    }
+
+    #[test]
+    fn backend_parity_adaptive_batched_diamond() {
+        let dag = make_diamond();
+        let config = AdaptiveSamplingConfig {
+            min_samples: 200,
+            max_samples: 2_000,
+            batch_size: 64,
+            seed: Some(3),
+            ..AdaptiveSamplingConfig::default()
+        };
+        let small = approximate_asv_adaptive_batched(&dag, weighted_batch, config).unwrap();
+        let large = approximate_asv_adaptive_batched_large(&dag, weighted_batch, config).unwrap();
+        assert_eq!(small.n_samples, large.n_samples);
+        for (&node, &v_small) in &small.values {
+            assert_eq!(v_small.to_bits(), large.values[&node].to_bits());
+        }
+    }
+
+    /// Phase 5 requirement: "chunk分割は推定結果へ影響しない" (chunking must not
+    /// affect the estimate). None of the other batched tests exercise the
+    /// chunking branch at all — a chain's unique-per-round count is only n+1,
+    /// far under `MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH` (4096), so
+    /// `unique_keys.chunks(...)` always yields exactly one chunk there. A
+    /// 70-node antichain (no structural sharing between samples at all) with
+    /// enough samples in one round produces well over 4096 distinct prefixes,
+    /// forcing multiple `value_fn_batch` calls — this asserts that actually
+    /// happens (not just that the cap constant exists) and that the additive
+    /// closed-form answer (ASV_i = 1.0 exactly, independent of DAG shape) still
+    /// comes out right despite chunking.
+    #[test]
+    fn batched_chunking_does_not_change_additive_result() {
+        let mut dag = Dag::new();
+        for i in 0..70usize {
+            dag.add_node(&format!("n{i}"));
+        }
+        let call_stats = std::cell::RefCell::new((0usize, 0usize)); // (num_calls, max_chunk_len)
+        let counting_batch = |coalitions: &[Vec<NodeId>]| -> Result<Vec<f64>, CausasvError> {
+            let mut stats = call_stats.borrow_mut();
+            stats.0 += 1;
+            stats.1 = stats.1.max(coalitions.len());
+            assert!(
+                coalitions.len() <= MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH,
+                "chunk exceeded cap: {} > {}",
+                coalitions.len(),
+                MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH
+            );
+            Ok(coalitions.iter().map(|c| c.len() as f64).collect())
+        };
+        let result = approximate_asv_batched_large(
+            &dag,
+            counting_batch,
+            SamplingConfig::new(300).with_seed(11).with_batch_size(300),
+        )
+        .unwrap();
+        let (num_calls, _max_chunk_len) = *call_stats.borrow();
+        assert!(
+            num_calls >= 2,
+            "expected >=4096 unique coalitions to force >=2 value_fn_batch calls, got {num_calls} call(s) \
+             — the antichain(70)/300-sample setup should produce far more than 4096 unique prefixes"
+        );
+        for (&node, &v) in &result.values {
+            assert!(
+                (v - 1.0).abs() < 1e-6,
+                "node {node:?}: expected 1.0 for additive v(S)=|S|, got {v}"
+            );
         }
     }
 
