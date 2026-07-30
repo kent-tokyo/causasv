@@ -84,3 +84,25 @@ pub enum CausasvError {
     )]
     HullFixedPointNotReached,
 }
+
+/// Every batched approximate path (small `u64` backend and large
+/// `LargeCoalition` backend alike) hands a caller-supplied `value_fn_batch`
+/// a list of coalitions and expects exactly one value back per coalition,
+/// then pairs them up positionally (`Iterator::zip`). `zip` silently stops
+/// at the shorter side, so a callback that returns too few values would
+/// otherwise leave the extra coalitions uncached (and, on the small path,
+/// panic later at an `unwrap()` lookup) rather than surfacing the
+/// callback's bug; one returning too many silently drops the tail. Call
+/// this before zipping so a length mismatch is a `CausasvError`, not a
+/// panic or a quietly wrong estimate.
+pub(crate) fn validate_batch_result_len(
+    expected: usize,
+    actual: usize,
+) -> Result<(), CausasvError> {
+    if expected != actual {
+        return Err(CausasvError::ValueFunctionError(format!(
+            "value_fn_batch returned {actual} values for {expected} coalitions"
+        )));
+    }
+    Ok(())
+}

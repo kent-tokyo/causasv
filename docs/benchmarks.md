@@ -101,6 +101,153 @@ Same seed + same num_threads → bitwise-identical results across runs.
 (defaults: rel_tol=0.01, ess_ratio_min=0.10). For an additive value function on a chain,
 convergence is fast and the adaptive method uses far fewer samples.
 
+### Large-DAG approximate paths (n > 64) — coalition-representation boundary
+
+`approximate`/`approximate_adaptive`/`approximate_batched`/`approximate_adaptive_batched`
+switch from a `u64` bitmask coalition to a growable word-vector bitset
+(`LargeCoalition`, `src/coalition.rs`) for n > 64 — see
+[correctness.md](correctness.md#large-dag-approximate-paths-n--64). These
+numbers check that switch doesn't introduce a discontinuous cost jump. All
+numbers below are from a single, internally-consistent measurement pass
+(every row below from the same `cargo bench` invocation, back to back) —
+**`cargo bench` on this machine is noisy enough between separate sessions
+that absolute numbers and even boundary percentages should not be trusted to
+more than roughly a factor of 2.** Concretely: an earlier measurement pass of
+this exact serial-path code (unchanged since) recorded a 64→65 step of +37%;
+this pass recorded +75% for the same code path. Treat "cost grows smoothly,
+no cliff at n=65" as the reliable qualitative claim; treat specific
+percentages as one machine's one snapshot, not a guarantee.
+
+#### Chain, serial seeded (2k samples)
+
+| n | Backend | Time |
+|---|---------|------|
+| 64 | `u64` | 2.48 ms |
+| 65 | `LargeCoalition` | 4.33 ms |
+| 128 | `LargeCoalition` | 8.55 ms |
+| 256 | `LargeCoalition` | 22.0 ms |
+
+64→65 is a **+75% step** in this pass (measured at +37% in an earlier
+session — see the noise note above), then cost grows roughly linearly with n
+from there — no cliff either time. The coalition buffer itself is reused
+across samples (not reallocated — see `LargeCoalition::clear()`), so this
+step is not allocation overhead; it's hashing/comparing a `&[u64]` slice on
+every cache lookup instead of a bare `u64`, which is unavoidable once
+addressing more than 64 nodes needs more than one machine word.
+
+#### Chain, seeded parallel (4 threads, 10k samples)
+
+| n | Backend | Time |
+|---|---------|------|
+| 64 | `u64` | 6.51 ms |
+| 65 | `LargeCoalition` | 11.5 ms |
+
++77% here, in the same range as this pass's serial step (+75%): each of the
+4 workers builds its own `LargeCoalitionCache`, so the same per-lookup
+overhead is paid 4× over, once per worker (see the "per cache instance, not
+per aggregate" note in correctness.md). Still a smooth, explainable step,
+not a cliff.
+
+#### Chain, adaptive (single-threaded, max 2k samples)
+
+| n | Time |
+|---|------|
+| 64 | 2.86 ms |
+| 65 | 3.72 ms |
+| 128 | 7.73 ms |
+
+64→65 here is +30% — smaller than the serial path's +75% in this same pass,
+despite near-identical per-sample mechanics (both single-threaded,
+rescale+Kahan). This gap is itself an illustration of the noise this section
+warns about: the absolute deltas involved are low-single-digit milliseconds,
+well within this machine's run-to-run variance.
+
+#### Chain, batched (batch_size=256, 2k samples)
+
+| n | Time |
+|---|------|
+| 64 | 3.36 ms |
+| 65 | 7.75 ms |
+| 128 | 16.3 ms |
+
++131% here — this is the one boundary percentage that *has* reproduced
+consistently across measurement sessions (+133% previously, +131% now),
+unlike the smaller non-batched deltas above. The n > 64 batched path now
+shares one bounded `LargeCoalitionCache` across every round of a call (same
+admission-capped design as the non-batched paths), so on a chain (single
+valid ordering, same n+1 coalitions revisited every round) `value_fn_batch`
+is called once total, not once per round — see
+`persistent_cache_collapses_batched_calls_on_chain` in `src/approx_large.rs`
+and the mechanism writeup in correctness.md. That said, the boundary jump
+measured here does **not** shrink versus a round-scoped cache, because this
+benchmark's callback is trivial: the per-round cost is dominated by
+coalition-key bookkeeping (snapshotting, sorting, and deduping
+`batch_size × (n+1)` keys), which runs every round regardless of whether the
+value underneath is already cached — and that bookkeeping cost is what
+reproduces so consistently here, not callback cost. The call-count reduction
+is a real win specifically for expensive value functions (a real Python
+model, costing milliseconds per call) — confirmed with a controlled
+same-process comparison in correctness.md — just not one this
+trivial-callback benchmark can show.
+
+#### Chain, adaptive batched (batch_size=256, max 2k samples)
+
+| n | Time |
+|---|------|
+| 64 | 3.68 ms |
+| 65 | 7.80 ms |
+| 128 | 17.9 ms |
+
++112% — same driver as the non-adaptive batched path above.
+
+#### Non-chain shapes (genuine IS variance, not a single deterministic ordering)
+
+| Shape | n | Backend | Time (2k samples, serial seeded) |
+|-------|---|---------|-----------------------------------|
+| Diamond-chain (layered, collider sinks) | 64 | `u64` | 2.53 ms |
+| Diamond-chain (layered, collider sinks) | 127 | `LargeCoalition` | 6.79 ms |
+| Caterpillar (fork-chain: chain + 1 leaf/node) | 66 | `LargeCoalition` | 3.50 ms |
+| Caterpillar (fork-chain: chain + 1 leaf/node) | 128 | `LargeCoalition` | 7.12 ms |
+
+Caterpillar costs noticeably more per node than the pure chain at a
+comparable n (3.50 ms/66 vs 4.33 ms/65 — note the chain figure here is *n=65*,
+one node larger): every main-chain node has a real 2-way sampling choice
+(continue the chain or take the leaf), so distinct samples visit more
+distinct prefixes and the coalition cache is warm less often — a real,
+expected difference in *workload*, not a representation-cost artifact.
+Unlike the chain, this shape doesn't maximize repetition across rounds the
+same way (above), since distinct samples share less structure with each
+other than a chain's samples do.
+
+#### Cache boundedness (not a Criterion benchmark — see `src/approx_large.rs`)
+
+`LargeCoalitionCache::len()` is asserted `<= max_entries` after 5,000 samples
+on a fully disconnected (antichain) 80-node DAG — the worst case for cache
+growth, since no two samples share any prefix past the empty coalition. This
+confirms memory does not scale with total sample count, only with the
+configured cap (`DEFAULT_LARGE_CACHE_MAX_ENTRIES`, currently 50,000 per cache
+instance — see correctness.md for why this is per-instance, not aggregate,
+under the parallel paths).
+
+#### Batched-path cache: shared across rounds, still bounded
+
+The batched large paths share one `LargeCoalitionCache` across every round of
+a call (admission-capped, same as the non-batched paths — see correctness.md),
+so memory is bounded by the cache's entry cap plus `n × batch_size` for the
+round in flight, not by the run's total sample count. An internal test
+(`batched_chunking_does_not_change_additive_result`, `src/approx_large.rs`)
+forces one round's unique-coalition count past
+`MAX_UNIQUE_COALITIONS_PER_LARGE_BATCH` (4,096) on a 70-node antichain and
+confirms the result is unaffected by the resulting chunked `value_fn_batch`
+calls; a second test (`persistent_cache_collapses_batched_calls_on_chain`)
+confirms the cache is actually reused across rounds, not just bounded within
+one.
+
+Reproduce the timing numbers above with:
+```
+cargo bench --bench asv_bench -- 'approx_boundary_chain|approx_diamond_chain_large|approx_caterpillar_large'
+```
+
 ### Prefix-mask cache lookup dedup (2026-07-03)
 
 Every sampling loop looked up both `without` (the coalition before adding the current

@@ -503,6 +503,182 @@ fn bench_approx_vs_uniform_diamond_10(c: &mut Criterion) {
     group.finish();
 }
 
+// ── large-DAG approximate (n > 64 coalition representation) ─────────────────
+//
+// A chain of diamonds: src -> width mids -> sink -> (next diamond's src) -> ...
+// Each sink is a collider with `width` parents, so unlike a chain or a fork
+// this is neither a rooted tree (colliders have in-degree > 1) nor trivially
+// low-variance — a "layered sparse" shape per docs/benchmarks.md.
+fn make_diamond_chain(num_diamonds: usize, width: usize) -> Dag {
+    let mut dag = Dag::new();
+    let mut prev = dag.add_node("s0");
+    for d in 0..num_diamonds {
+        let mids: Vec<_> = (0..width)
+            .map(|w| dag.add_node(&format!("d{d}m{w}")))
+            .collect();
+        for &m in &mids {
+            dag.add_edge(prev, m).unwrap();
+        }
+        let sink = dag.add_node(&format!("d{d}sink"));
+        for &m in &mids {
+            dag.add_edge(m, sink).unwrap();
+        }
+        prev = sink;
+    }
+    dag
+}
+
+// Boundary check: is there a discontinuous cost jump exactly at n=64 -> 65,
+// where the coalition representation switches from a plain u64 mask to the
+// word-vector LargeCoalition? Same shape (chain), same n_samples, only n varies.
+fn bench_approx_boundary_chain_serial(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_boundary_chain_serial_2k");
+    for &n in &[64usize, 65, 128, 256] {
+        let dag = make_chain(n);
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate(
+                        |s| Ok(black_box(s.len() as f64)),
+                        SamplingConfig::new(2_000).with_seed(42),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_approx_boundary_chain_seeded_parallel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_boundary_chain_seeded_parallel_4t_10k");
+    for &n in &[64usize, 65] {
+        let dag = make_chain(n);
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate(
+                        |s| Ok(black_box(s.len() as f64)),
+                        SamplingConfig::new(10_000)
+                            .with_seed(42)
+                            .with_parallel(true)
+                            .with_num_threads(4),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_approx_boundary_chain_adaptive(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_boundary_chain_adaptive");
+    for &n in &[64usize, 65, 128] {
+        let dag = make_chain(n);
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate_adaptive(
+                        |s| Ok(black_box(s.len() as f64)),
+                        AdaptiveSamplingConfig::new()
+                            .with_max_samples(2_000)
+                            .with_seed(42),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_approx_boundary_chain_batched(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_boundary_chain_batched_b256");
+    for &n in &[64usize, 65, 128] {
+        let dag = make_chain(n);
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate_batched(
+                        |cs| Ok(cs.iter().map(|c| black_box(c.len() as f64)).collect()),
+                        SamplingConfig::new(2_000)
+                            .with_seed(42)
+                            .with_batch_size(256),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_approx_boundary_chain_adaptive_batched(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_boundary_chain_adaptive_batched_b256");
+    for &n in &[64usize, 65, 128] {
+        let dag = make_chain(n);
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate_adaptive_batched(
+                        |cs| Ok(cs.iter().map(|c| black_box(c.len() as f64)).collect()),
+                        AdaptiveSamplingConfig::new()
+                            .with_max_samples(2_000)
+                            .with_seed(42),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+// Layered-sparse shape (diamond chain) at n ≈ 64 / 128 — not a rooted tree
+// (colliders), so this exercises genuine IS variance on the large path.
+fn bench_approx_diamond_chain_large(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_diamond_chain_large_2k");
+    for &(num_diamonds, width) in &[(9usize, 6usize), (18, 6)] {
+        let dag = make_diamond_chain(num_diamonds, width);
+        let n = dag.node_count();
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate(
+                        |s| Ok(black_box(s.len() as f64)),
+                        SamplingConfig::new(2_000).with_seed(42),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+// Fork-chain shape (caterpillar: a chain with one extra leaf per main node) at
+// n ≈ 66 / 128 — reuses `make_caterpillar` from the exact_tree benchmarks above.
+fn bench_approx_caterpillar_large(c: &mut Criterion) {
+    let mut group = c.benchmark_group("approx_caterpillar_large_2k");
+    for &chain_len in &[33usize, 64] {
+        let dag = make_caterpillar(chain_len);
+        let n = dag.node_count();
+        let explainer = AsvExplainer::new(dag);
+        group.bench_function(format!("n{n}"), |b| {
+            b.iter(|| {
+                explainer
+                    .approximate(
+                        |s| Ok(black_box(s.len() as f64)),
+                        SamplingConfig::new(2_000).with_seed(42),
+                    )
+                    .unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_exact_chain_7,
@@ -528,5 +704,12 @@ criterion_group!(
     bench_exact_dag_vs_sparse_chain_16,
     bench_approx_vs_adaptive_chain_10,
     bench_approx_vs_uniform_diamond_10,
+    bench_approx_boundary_chain_serial,
+    bench_approx_boundary_chain_seeded_parallel,
+    bench_approx_boundary_chain_adaptive,
+    bench_approx_boundary_chain_batched,
+    bench_approx_boundary_chain_adaptive_batched,
+    bench_approx_diamond_chain_large,
+    bench_approx_caterpillar_large,
 );
 criterion_main!(benches);
