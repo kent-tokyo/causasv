@@ -913,9 +913,11 @@ mod tests {
     /// not be caught by `backend_parity_serial_seeded_diamond` alone. Both
     /// backends draw the identical sample sequence for a given seed/n_samples/
     /// batch_size and call a deterministic value function, so despite the
-    /// large path's round-scoped (not persistent) cache, bitwise parity still
-    /// holds: caching only affects how many times a value is *computed*, never
-    /// what it computes to.
+    /// small and large paths using differently-shaped caches (persistent
+    /// `HashMap` vs. the bounded, admission-capped `LargeCoalitionCache`
+    /// shared across rounds), bitwise parity still holds: caching only
+    /// affects how many times a value is *computed*, never what it computes
+    /// to.
     #[test]
     fn backend_parity_batched_diamond() {
         let dag = make_diamond();

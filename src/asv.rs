@@ -791,8 +791,10 @@ impl AsvExplainer {
     /// Set `config.batch_size` to control how many samples to collect per batch call.
     /// With `batch_size=1`, results are identical to `approximate` for the same seed.
     /// Works for any DAG size — see [`Self::approximate`] for how n > 64 is handled internally.
-    /// For n > 64, the coalition→value cache is round-scoped (not persisted across
-    /// sampling batches) rather than the bounded whole-call cache `approximate` uses.
+    /// For n > 64, the bounded coalition-value cache is shared across
+    /// sampling rounds for the duration of the call. Admission stops when
+    /// the configured internal cap is reached; correctness does not depend
+    /// on cache hits.
     pub fn approximate_batched<F>(
         &self,
         value_fn_batch: F,
@@ -809,7 +811,7 @@ impl AsvExplainer {
     /// coalitions in batches via `value_fn_batch`.
     ///
     /// Each sampling batch (of `config.batch_size` samples) becomes one `value_fn_batch` call.
-    /// Works for any DAG size — see [`Self::approximate_batched`] for the n > 64 caching note.
+    /// Works for any DAG size — see [`Self::approximate_batched`] for the n > 64 cache-sharing note.
     pub fn approximate_adaptive_batched<F>(
         &self,
         value_fn_batch: F,
