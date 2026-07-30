@@ -264,6 +264,11 @@ values = explainer.explain_instance(X_test[0], method="auto")
 
 `auto` ディスパッチ：n ≤ 8 → `exact`；有根木 → `ExactTreeConfig` のコスト予算に収まれば `exact_tree`、収まらなければ（n ≤ 63 かつ順序イデアル数 ≤ 250k のプリフライトを満たせば）`exact_dag_sparse`、それも無理なら `approx`；n ≤ 20 → 順序イデアル数が密な状態数の半分に収まれば `exact_dag_sparse` そうでなければ `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 順序イデアル数 ≤ 250k なら `exact_dag_sparse`（疎プリフライト）そうでなければ `approx`；n > 63 → `approx`。
 
+**n の上限が実際にどこにかかるか：**
+- `exact` / `exact_tree` / `exact_dag`：それぞれ小さく、メソッド固有の n 上限（ブルートフォースは ~8、`exact_tree` は形状依存、密 DP は 20）。これらは `2^n` 型の密表現を使うため、この上限は撤廃予定はありません。
+- `exact_dag_sparse` / `uniform_sparse` / `uniform_sparse_adaptive`：n ≤ 63 — 疎な順序イデアル DP も依然として連合を `u64` に詰めるため、この上限はプリフライトの選択ではなく構造的な制約です。
+- `approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch`：**ノード数の上限はありません。** n > 64 では、連合の内部表現が `u64` マスクではなく可変長ビットセットになります（`src/coalition.rs` 参照）。大規模 DAG での実用上の制約は `n_samples`・値関数のコスト・連合キャッシュのメモリ予算であり、n そのものではありません。
+
 `exact_tree` のコストはノード数 n だけでなく木の*形状*に依存します：幅・深さのある兄弟部分木を複数持つノードは大きなカルテシアン積を生みます。`exact_tree`（および `auto`/`auto_quality`）は実際に列挙する前に O(n) のプリフライト（`ExactTreeConfig`、デフォルト予算は単一ノードあたり 50,000 項・合計 200,000 項）を実行し、超過時は `ExactTreeBudgetExceeded` を返すかフォールバックします。詳細は [docs/correctness.md](docs/correctness.md#exact-method-bounds)、動機となった事例は [issue #36](https://github.com/kent-tokyo/causasv/issues/36) を参照してください。
 
 `exact_dag_sparse` は有効な順序イデアル（すべてのノードの親も存在する集合）のみを訪問します。疎な DAG では 2^n よりはるかに少ない状態で厳密計算が可能です。`n_order_ideals`・`state_ratio`・`memory_mb` の診断値を返します。
@@ -334,6 +339,12 @@ Apple M シリーズ（arm64、リリースビルド）での選択結果。`v(S
 | チェーン | 20 | `approx` シード付き直列（10k） | **19 ms** |
 | チェーン | 20 | `approx` 並列 4 スレッド（10k） | 7.4 ms |
 | バランス木 | 31 | `approx` シード付き（10k サンプル） | 83 ms |
+| チェーン | 64 | `approx` シード付き直列（2k、u64 バックエンド） | 2.48 ms |
+| チェーン | 65 | `approx` シード付き直列（2k、large バックエンド） | 4.33 ms |
+| チェーン | 128 | `approx` シード付き直列（2k、large バックエンド） | 8.55 ms |
+| チェーン | 256 | `approx` シード付き直列（2k、large バックエンド） | 22.0 ms |
+
+n=64→65 の行は連合表現の切り替え境界です（上記「n の上限が実際にどこにかかるか」参照）：サンプルあたりのコストは滑らかに増加し（境界自体は今回の計測で約75%増 — このマシンでは `cargo bench` のセッション間ノイズが大きく、同じ未変更のコードでも以前の計測では約37%増だった。詳細は [docs/benchmarks.md](docs/benchmarks.md) の注記を参照 — 以降はほぼ n に線形）、n=65 でどちらの計測でも不連続な崖はありません — 連合バッファ自体はサンプル間で再利用され再確保されないため、これは `u64` の代わりに `&[u64]` スライスをキャッシュ参照のたびにハッシュするコストです。batched 系の n > 64 連合キャッシュは呼び出し全体のラウンドを通じて共有されます（非 batched 系と同じ上限付き admission 方式）。そのため、チェーンのようにラウンドをまたいで同じ連合が繰り返される形状では、`value_fn_batch` はラウンドごとではなく全体で一度しか呼ばれません。ただしこのクレート自身のベンチマークは安価な合成コールバックを使っているため、この境界での段差はコールバックのコストではなく、ラウンドごとの連合キー管理（スナップショット・ソート・重複排除）のコストを反映しています — 呼び出し回数の削減が実際に効くのは、コストの高い値関数（実際の Python モデルなど）の場合です。並列・adaptive・batched・非木形状での測定値と、この比較の詳細は [docs/benchmarks.md](docs/benchmarks.md) と [docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64) を参照してください。
 
 このバランス木（n=31）は意図的に `exact_tree` ではなく `approx` でベンチマークしています：この形状のノードあたりコスト（176,020 — [docs/correctness.md](docs/correctness.md#exact-method-bounds) 参照）が `ExactTreeConfig` のデフォルト予算を超えており、実際に `exact_tree` を実行すると約20〜25秒かかります。`auto`/`auto_quality` は O(n) のプリフライトでこれを検知し、数十秒かけて実行する代わりに自動でフォールバックします。
 
@@ -342,7 +353,7 @@ Apple M シリーズ（arm64、リリースビルド）での選択結果。`v(S
 ## 現在の制限事項
 
 - ブルートフォース exact ASV は線形拡張の数に対して指数的；n ≤ ~8 ノードでのみ実用的。
-- `exact_tree` は有根有向木（単一ルート、他の全ノードの入次数が 1）**かつ** ノードあたりの組み合わせコストが `ExactTreeConfig` の予算（デフォルト 50,000 / 200,000 — [docs/correctness.md](docs/correctness.md#exact-method-bounds) 参照）に収まる形状を必要とします。n が小さくても幅・深さのある木は拒否され得ます。n ≤ 20 の一般 DAG には `exact_dag`、n ≤ 28 の疎 DAG には `exact_dag_sparse`、それより大きい DAG には `approx` を使用してください。n > 64 の有根木には現状、動く厳密手法も近似手法もありません（`approximate` 自体のビットマスク上限も n ≤ 64 が条件）— これは `exact_tree` の形状ガードとは別に追跡されている既知のギャップです。
+- `exact_tree` は有根有向木（単一ルート、他の全ノードの入次数が 1）**かつ** ノードあたりの組み合わせコストが `ExactTreeConfig` の予算（デフォルト 50,000 / 200,000 — [docs/correctness.md](docs/correctness.md#exact-method-bounds) 参照）に収まる形状を必要とします。n が小さくても幅・深さのある木は拒否され得ます。n ≤ 20 の一般 DAG には `exact_dag`、n ≤ 28 の疎 DAG には `exact_dag_sparse` を使用してください。それより大きい DAG、あるいはサイズだけの理由で `exact_tree` に拒否される n > 64 の有根木も含め、`approx` / `approx_adaptive` / `approx_adaptive_batch` を使用してください — これらにノード数の上限はなく、`auto`/`auto_quality` は既に自動でこれらへフォールバックします。
 - 組み込みの因果探索、モデル訓練、自動グラフ構築はありません。
 
 ## 他ツールとの比較

@@ -183,6 +183,13 @@ impl AsvExplainer {
 
     /// Approximate ASV via IS-weighted topological order sampling.
     /// Works for any DAG size; use a large n_samples for accuracy.
+    ///
+    /// For n ≤ 64, a sample's coalition is a plain `u64` bitmask. For n > 64,
+    /// it is instead a growable word-vector bitset (see `crate::coalition`)
+    /// with a bounded coalition→value cache — this is an internal
+    /// implementation detail, not a caller-visible difference. In practice
+    /// the limiting factors for large DAGs are `n_samples`, the cost of
+    /// `value_fn`, and memory budget, not `n` itself.
     pub fn approximate<F>(
         &self,
         value_fn: F,
@@ -399,7 +406,8 @@ impl AsvExplainer {
     ///   falls back to `approximate`
     /// - 28 < n ≤ 63: `exact_dag_sparse` if order ideal count ≤ 250k (sparse preflight),
     ///   else `approximate`
-    /// - n > 63: `approximate` — u64 bitmask limit
+    /// - n > 63: `approximate` — the exact/sparse methods above all require n ≤ 63
+    ///   (u64 bitmask); `approximate` itself has no such limit (see its own doc comment)
     ///
     /// `config` is used only when the approximate path is taken.
     pub fn auto<F>(&self, value_fn: F, config: SamplingConfig) -> Result<AsvResult, CausasvError>
@@ -414,6 +422,14 @@ impl AsvExplainer {
             Ok(r)
         } else if self.is_rooted_tree {
             let vfn = &value_fn;
+            // Which of exact_tree's two failure modes fired determines the
+            // *true* cause reported below. Note this can't be inferred from
+            // `n` alone: `estimate_tree_exact_cost`'s shape check runs before
+            // `tree_exact_asv`'s own n>64 bitmask check, so a bushy tree with
+            // n > 64 can still hit ExactTreeBudgetExceeded first if its shape
+            // is *also* infeasible — the match on the error variant is the
+            // only reliable signal.
+            let mut tree_reason = "tree shape exceeded exact_tree's feasibility budget";
             match self.exact_tree_with_config(|c| vfn(c), &ExactTreeConfig::default()) {
                 Ok(mut r) => {
                     r.method_used = Some("exact_tree");
@@ -421,12 +437,17 @@ impl AsvExplainer {
                 }
                 // ExactTreeBudgetExceeded: this tree's *shape* (wide, deeply-branching
                 // subtrees), not just its size, makes exact_tree's cartesian-product
-                // step infeasible. InvalidConfig here can only be exact_tree's own
-                // n>64 bitmask limit (is_rooted_tree is already true and the DAG is
-                // already validated) — previously that propagated straight out of
-                // auto() as an error instead of falling back like every other branch.
-                Err(CausasvError::ExactTreeBudgetExceeded { .. })
-                | Err(CausasvError::InvalidConfig(_)) => {}
+                // step infeasible.
+                Err(CausasvError::ExactTreeBudgetExceeded { .. }) => {}
+                // InvalidConfig here can only be exact_tree's own n>64 bitmask
+                // limit (is_rooted_tree is already true and the DAG is already
+                // validated) — a genuinely different cause than the shape
+                // budget above, previously unreachable because this whole
+                // branch propagated straight out of auto() as an error instead
+                // of falling back like every other branch.
+                Err(CausasvError::InvalidConfig(_)) => {
+                    tree_reason = "tree exceeds exact_tree's n ≤ 64 bitmask limit";
+                }
                 Err(e) => return Err(e),
             }
             // exact_tree's specialized DP can't handle this tree; the general sparse
@@ -450,8 +471,7 @@ impl AsvExplainer {
                 match self.exact_dag_sparse_with_config(|c| vfn(c), &sparse_cfg) {
                     Ok(mut r) => {
                         r.fallback_from = Some("exact_tree".to_string());
-                        r.fallback_reason =
-                            Some("tree shape exceeded exact_tree's feasibility budget".to_string());
+                        r.fallback_reason = Some(tree_reason.to_string());
                         r.method_used = Some("exact_dag_sparse");
                         return Ok(r);
                     }
@@ -461,11 +481,15 @@ impl AsvExplainer {
             }
             let mut r = self.approximate(value_fn, config)?;
             r.fallback_from = Some("exact_tree".to_string());
-            r.fallback_reason = Some(
-                "tree shape exceeded exact_tree's feasibility budget; exact_dag_sparse also \
-                 infeasible for this DAG"
-                    .to_string(),
-            );
+            // The "exact_dag_sparse also infeasible" clause only applies when
+            // that fallback was actually attempted (n ≤ 63 above) — for n > 63
+            // it's skipped outright regardless of which exact_tree error fired,
+            // so appending it unconditionally would misreport what was tried.
+            r.fallback_reason = Some(if n <= 63 {
+                format!("{tree_reason}; exact_dag_sparse also infeasible for this DAG")
+            } else {
+                tree_reason.to_string()
+            });
             r.method_used = Some("approx");
             Ok(r)
         } else if n <= 20 {
@@ -602,15 +626,21 @@ impl AsvExplainer {
             Ok(r)
         } else if self.is_rooted_tree {
             let vfn = &value_fn;
+            // See auto()'s identical branch for why this is a match on the
+            // error variant rather than on `n`: ExactTreeBudgetExceeded is a
+            // shape rejection, InvalidConfig is exact_tree's n>64 bitmask
+            // limit, and a bushy n>64 tree can hit either one first depending
+            // on which check runs first internally.
+            let mut tree_reason = "tree shape exceeded exact_tree's feasibility budget";
             match self.exact_tree_with_config(|c| vfn(c), &ExactTreeConfig::default()) {
                 Ok(mut r) => {
                     r.method_used = Some("exact_tree");
                     return Ok(r);
                 }
-                // See auto()'s identical branch: ExactTreeBudgetExceeded is a shape
-                // rejection, InvalidConfig here can only be the n>64 bitmask limit.
-                Err(CausasvError::ExactTreeBudgetExceeded { .. })
-                | Err(CausasvError::InvalidConfig(_)) => {}
+                Err(CausasvError::ExactTreeBudgetExceeded { .. }) => {}
+                Err(CausasvError::InvalidConfig(_)) => {
+                    tree_reason = "tree exceeds exact_tree's n ≤ 64 bitmask limit";
+                }
                 Err(e) => return Err(e),
             }
             if n <= 63 {
@@ -626,9 +656,7 @@ impl AsvExplainer {
                     match self.exact_dag_sparse_with_config(|c| vfn(c), &sparse_cfg) {
                         Ok(mut r) => {
                             r.fallback_from = Some("exact_tree".to_string());
-                            r.fallback_reason = Some(
-                                "tree shape exceeded exact_tree's feasibility budget".to_string(),
-                            );
+                            r.fallback_reason = Some(tree_reason.to_string());
                             r.method_used = Some("exact_dag_sparse");
                             return Ok(r);
                         }
@@ -645,19 +673,15 @@ impl AsvExplainer {
                 // its own state budget.
                 let mut r = self.approximate_adaptive(value_fn, config)?;
                 r.fallback_from = Some("exact_tree".to_string());
-                r.fallback_reason = Some(
-                    "tree shape exceeded exact_tree's feasibility budget; exact_dag_sparse also \
-                     infeasible for this DAG"
-                        .to_string(),
-                );
+                r.fallback_reason = Some(format!(
+                    "{tree_reason}; exact_dag_sparse also infeasible for this DAG"
+                ));
                 r.method_used = Some("approx_adaptive");
                 Ok(r)
             } else {
                 let mut r = self.approximate_adaptive(value_fn, config)?;
                 r.fallback_from = Some("exact_tree".to_string());
-                r.fallback_reason = Some(
-                    "tree shape exceeded exact_tree's feasibility budget (n > 63)".to_string(),
-                );
+                r.fallback_reason = Some(tree_reason.to_string());
                 r.method_used = Some("approx_adaptive");
                 Ok(r)
             }
@@ -748,6 +772,7 @@ impl AsvExplainer {
     ///
     /// Always single-threaded for deterministic convergence behavior.
     /// Returns per-node standard error estimates alongside ASV values.
+    /// Works for any DAG size — see [`Self::approximate`] for how n > 64 is handled internally.
     pub fn approximate_adaptive<F>(
         &self,
         value_fn: F,
@@ -765,6 +790,11 @@ impl AsvExplainer {
     ///
     /// Set `config.batch_size` to control how many samples to collect per batch call.
     /// With `batch_size=1`, results are identical to `approximate` for the same seed.
+    /// Works for any DAG size — see [`Self::approximate`] for how n > 64 is handled internally.
+    /// For n > 64, the bounded coalition-value cache is shared across
+    /// sampling rounds for the duration of the call. Admission stops when
+    /// the configured internal cap is reached; correctness does not depend
+    /// on cache hits.
     pub fn approximate_batched<F>(
         &self,
         value_fn_batch: F,
@@ -781,6 +811,7 @@ impl AsvExplainer {
     /// coalitions in batches via `value_fn_batch`.
     ///
     /// Each sampling batch (of `config.batch_size` samples) becomes one `value_fn_batch` call.
+    /// Works for any DAG size — see [`Self::approximate_batched`] for the n > 64 cache-sharing note.
     pub fn approximate_adaptive_batched<F>(
         &self,
         value_fn_batch: F,

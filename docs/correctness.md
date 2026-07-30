@@ -98,6 +98,94 @@ Before trusting an approximate result:
 `info["selected_method"]`. If `exact_dag_sparse` hits the memory or overflow
 limit, it falls back to `approx` and sets `info["fallback_from"]`.
 
+## Large-DAG approximate paths (n > 64)
+
+`approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch` have
+no node-count limit. The frontier sampler that drives all of them
+(`sample_one_into`) never represents a coalition as a bitmask at all — it only
+needs `Vec`-sized scratch space — so the only place a coalition needs a
+concrete representation is where a sample's growing prefix is turned into the
+`Vec<NodeId>` handed to a value function, and where that prefix is used as a
+cache key.
+
+- For n ≤ 64, that representation is a single `u64` (`1u64 << node.0`).
+- For n > 64, it is a growable word-vector bitset (`LargeCoalition` in
+  `src/coalition.rs`): `ceil(n / 64)` `u64` words, word `w` holding the bits
+  for nodes `[64w, 64w+64)`. Ascending `NodeId` order falls out of the
+  word/bit layout directly (word index, then bit index), so there is no
+  `HashSet`/`HashMap` iteration order to leak into the coalitions a value
+  function sees.
+
+Both representations are fed by the *same* sampler and the *same*
+self-normalized IS math (log-weight rescaling, Kahan summation, ESS/stderr
+formulas) — only the coalition type and its cache differ. Because of that,
+correctness for n > 64 is verified two ways:
+
+1. **Backend parity** (`src/approx_large.rs`, internal `#[cfg(test)]` tests,
+   plus a `proptest` generalization): on the *same* n ≤ 64 DAG, same seed,
+   same sampling order, the n ≤ 64 (`u64`) and n > 64 (`LargeCoalition`)
+   backends must agree — bitwise, for the serial-seeded, adaptive-serial,
+   batched, and adaptive-batched paths alike. This holds even though the
+   batched paths' caching differs between backends (see below) because
+   caching only changes how many times a value is *computed*, never what it
+   computes to, and the underlying value function is deterministic. This is
+   the primary correctness oracle: there is no independent *exact* method for
+   n > 64 to compare against (`exact_dag_sparse` and `uniform_sparse` both
+   still require n ≤ 63 — see below).
+2. **Closed-form additive check** (`tests/large_dag_approx_tests.rs`): for
+   `v(S) = |S|`, the true ASV is exactly 1.0 per node on *any* DAG, so a
+   65/128/256-node chain gives a direct accuracy check without needing an
+   oracle at all.
+
+**Bounded, not unbounded, caching.** The n ≤ 64 path's `HashMap<u64, f64>`
+cache is implicitly bounded (at most `2^n` distinct keys). A `Box<[u64]>`-keyed
+cache has no such ceiling, and for large, sparsely-branching DAGs, distinct IS
+samples rarely revisit the same prefix past the first couple of steps — an
+unbounded cache would grow roughly `n` entries per sample at a vanishing hit
+rate. `approximate`/`approximate_adaptive` use a `LargeCoalitionCache` capped
+at a fixed entry count *per cache instance* (lookups keep working past the
+cap; new inserts are just skipped, so correctness never depends on the cap).
+"Per instance" matters for the parallel paths: seeded-parallel builds one
+cache per worker thread, so aggregate memory is (roughly) the cap × thread
+count; unseeded-parallel builds one cache per Rayon fold split, which is not
+guaranteed to equal the thread count.
+
+The batched paths (`approximate_batched`/`approximate_adaptive_batched`) share
+one `LargeCoalitionCache` across every sampling round of a call, admission-capped
+the same way as the non-batched paths (lookups always work; new inserts are
+declined once the cap is hit; nothing is ever evicted). Each round still does
+its own dedup first (`sort_unstable` + `dedup` on that round's sampled
+prefixes) so a round's repeated coalitions never query the cache twice for the
+same key — only the *first* time a coalition is seen across the whole run
+reaches `value_fn_batch`. On a DAG shape with high structural repetition
+across rounds (a chain has only one valid ordering, so every round revisits
+the *same* n+1 coalitions), this collapses `value_fn_batch` traffic from once
+per round to once *total*: a dedicated test
+(`persistent_cache_collapses_batched_calls_on_chain`, `src/approx_large.rs`)
+drives a 65-node chain through 10 rounds and asserts exactly one call reaches
+the batch value function.
+
+That call-count reduction is a real win for an expensive value function (a
+Python model callback measured in milliseconds), but it does **not** show up
+in this crate's own Criterion benchmarks, because those use a cheap synthetic
+callback — there, the dominant per-round cost is the coalition-key
+bookkeeping itself (snapshotting, sorting, and deduping `batch_size × (n+1)`
+`Box<[u64]>` keys every round), which runs regardless of whether the value
+underneath is already cached. A controlled same-process comparison confirms
+both ends of this: with a 50µs/call synthetic cost the persistent cache saves
+under 2% of wall time (bookkeeping dominates), but with a 5ms/call cost — closer
+to a real model-inference callback — it saves roughly (rounds − 1) × 5ms, i.e.
+most of the added cost from repeated invocation. In other words: this change
+helps exactly the case it was designed for (expensive value functions), and is
+neutral on cheap ones. See docs/benchmarks.md for the Criterion numbers this
+implies for `cargo bench`'s synthetic callback specifically.
+
+See [docs/benchmarks.md](docs/benchmarks.md) for the measured n=64→65
+boundary cost (a smooth increase, not a cliff — driven by hashing/comparing a
+`&[u64]` slice on every cache lookup instead of a bare `u64`, since the
+coalition buffer itself is reused across samples rather than reallocated) and
+the cache-bound stress test in `src/approx_large.rs`.
+
 **`exact_tree`'s cost is shape-dependent, not just a function of node count.**
 A node's cost is the product of every ancestor level's side-sibling order-ideal
 count, so a tree with several wide/deep branches can reach billions of
