@@ -7,6 +7,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.9] — 2026-10-03
+
 ### Fixed
 - Importance-sampling paths now support DAGs above 64 nodes through a growable
   coalition representation and an admission-capped cache. Exact and uniform
@@ -30,6 +32,10 @@ Versions follow [Semantic Versioning](https://semver.org/).
   `docs/correctness.md` and `docs/benchmarks.md`.
 - Simplified contributor guidance and the quietset integration guide without
   changing their contracts.
+
+### Dependencies
+- Updated the locked `chacha20` transitive dependency from 0.10.1 to 0.10.2
+  after 0.10.1 was yanked.
 
 ## [0.8.8] — 2026-07-27
 

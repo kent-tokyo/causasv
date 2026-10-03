@@ -153,7 +153,7 @@ print(result["ci_low"], result["ci_high"])
 
 ## 状态
 
-实验性 — v0.8.8。公开 API 在 v1.0 之前可能变化。
+实验性 — v0.8.9。公开 API 在 v1.0 之前可能变化。
 
 小图上的穷举实现是优化算法的正确性参考。已发布和未发布的变更见[CHANGELOG.md](CHANGELOG.md)。
 

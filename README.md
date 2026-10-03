@@ -182,7 +182,7 @@ function only. They are not general performance or attribution-quality claims.
 
 ## Status
 
-Experimental — v0.8.8. Public APIs may change before v1.0.
+Experimental — v0.8.9. Public APIs may change before v1.0.
 
 The brute-force implementation remains the correctness oracle for optimized
 methods on small graphs. See [CHANGELOG.md](CHANGELOG.md) for released and
