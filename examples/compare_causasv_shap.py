@@ -20,7 +20,6 @@ import time
 
 import numpy as np
 import shap
-
 from causasv import ASVExplainer, CausalDAG, explain_quality
 
 # ── Shared value function for runtime comparison ───────────────────────────────
