@@ -1,11 +1,12 @@
-# causasv vs SHAP — Comparison
+# ASV and SHAP comparison
 
-Comparison of causasv (Asymmetric Shapley Values) with SHAP KernelExplainer
-across runtime, coalition call count, and attribution accuracy.
+This worked example compares `causasv` ASV with SHAP KernelExplainer across
+runtime, coalition calls, and attribution behavior. ASV and SHAP average over
+different ordering sets, so disagreement is not by itself an accuracy result.
 
 Reproduce: `python examples/compare_causasv_shap.py` (requires `pip install shap numpy`).
 
-**Setup:** Apple M-series (arm64) · causasv v0.8.5 · shap 0.52.0 · Python 3.13.6
+**Historical setup:** Apple M-series (arm64) · causasv v0.8.5 · shap 0.52.0 · Python 3.13.6
 
 ---
 

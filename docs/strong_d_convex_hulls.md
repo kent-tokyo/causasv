@@ -37,8 +37,8 @@ mathematical definitions and algorithms (Definitions 2–8, Theorem 5, and the
 CVM/ICHA/ISCHA algorithms in its Section 3), written in causasv's own code
 style and control flow. No source code was consulted from, or is derived
 from, the paper's own reference implementation
-(`github.com/Jamyang-D/strongly-convex`, which as of this writing carries no
-software license — hence the clean-room approach). This module is **not
+(`github.com/Jamyang-D/strongly-convex`, which had no software license when
+rechecked on 2026-10-03 — hence the clean-room approach). This module is **not
 affiliated with or endorsed by the paper's authors**.
 
 `causasv`'s own code remains licensed MIT OR Apache-2.0 regardless of the
@@ -100,7 +100,8 @@ means the caller's data/estimation setup should actually satisfy them:
 - **No latent variables**: the paper's results assume a fully observed
   causal Bayesian network.
 
-This is based on **preprint v1** (submitted June 2026). Definitions or
+This is based on **preprint v1** (submitted June 2026 and still current when
+rechecked on 2026-10-03). Definitions or
 algorithms may change in a future revision of the paper; this
 implementation was written against the version cited above.
 

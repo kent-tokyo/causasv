@@ -1,6 +1,8 @@
-# causasv Benchmark Corpus
+# Python benchmark corpus
 
-A structured comparison of causasv methods across 8 canonical DAG shapes.
+A historical v0.8.5 snapshot across eight canonical DAG shapes. Use it to
+reproduce method-selection behavior in the pinned environment, not as a
+current cross-version performance claim.
 
 Reproduce: `python examples/benchmark_corpus.py` (requires causasv installed via maturin).
 
@@ -29,10 +31,10 @@ Reproduce: `python examples/benchmark_corpus.py` (requires causasv installed via
 |--------|--------|-----|-----|-----------|
 | `exact` | ✓ | — | — | n ≤ ~8 |
 | `exact_dag` | ✓ | — | — | n ≤ 20 |
-| `exact_dag_sparse` | ✓ | — | — | n ≤ 63 (memory-bounded) |
+| `exact_dag_sparse` | ✓ | — | — | default n ≤ 28; configurable to 63 |
 | `uniform_sparse` | ✗ | = n_samples | via `explain_quality` | n ≤ 63 (sparse DAGs) |
 | `auto` | DAG-dependent | IS-weighted | ✗ | any |
-| `auto_quality` | DAG-dependent | = n_samples (approx path) | ✓ | any |
+| `auto_quality` | DAG-dependent | uniform where feasible; otherwise IS | ✓ | any |
 
 ---
 
@@ -84,7 +86,7 @@ dense_8                  7 auto_quality                0.1    yes     —       
 
 - **auto / auto_quality correctly routes small DAGs to exact** — no approximation overhead for n ≤ 8.
 - **chain_24 is a rooted tree** — auto dispatches to `exact_tree`, which is exact and very fast. The sparse DP is available as a fallback for non-tree sparse DAGs at this size.
-- **uniform_sparse ESS = n_samples always** — no IS weight variance regardless of DAG structure, but has higher per-sample overhead than IS-weighted frontier sampling.
+- **uniform_sparse ESS = n_samples always** — no IS weight variance, but its memoized state table can be expensive on weakly constrained DAGs.
 - **two_chains_10**: sparse DP visits only (5+1)² = 36 valid order ideals vs 2¹⁰ = 1024 for dense DP — `auto` correctly uses `exact_dag_sparse`.
 
 ---
@@ -94,9 +96,10 @@ dense_8                  7 auto_quality                0.1    yes     —       
 | Aspect | `auto` | `auto_quality` |
 |--------|--------|----------------|
 | Exact path | ✓ same | ✓ same |
-| Approximate fallback | IS-weighted (`approx`) | Uniform sparse adaptive |
-| ESS on approx path | variable (IS weights) | = n_samples always |
+| Approximate fallback | IS-weighted (`approx`) | Uniform sparse adaptive when feasible, otherwise adaptive IS |
+| ESS on approx path | variable (IS weights) | exact sample count for uniform paths; variable for IS fallback |
 | CI / stderr | ✗ | ✓ always |
 | Use when | speed matters, CI not required | CI or ESS guarantee needed |
 
-`auto_quality` is recommended for production workflows; `auto` is faster for exploratory use when uncertainty quantification is not needed.
+Use `auto_quality` when standard errors and convergence metadata are required;
+use `auto` when a fixed sample budget is sufficient.

@@ -1,69 +1,30 @@
-# quietset label instability → causasv ASV attribution
+# Attribute quietset label instability with ASV
 
-`causasv.instability` (`py/causasv/instability.py`) attributes **why** quietset
-flagged certain samples as label-unstable to upstream factors the user cares
-about (evaluator family, search budget, model checkpoint, loss recipe, ...),
-under a user-supplied causal DAG.
+`causasv.instability` attributes a model's ability to predict quietset label
+instability to upstream factors under a caller-supplied DAG.
 
-## What this is, and what it is not
+The result is a diagnostic ranking, not an intervention effect or verdict.
+For example, a high ASV for `evaluator_family` means that the fitted model used
+that feature strongly under the supplied DAG. It does not show that changing
+the evaluator will reduce instability by the ASV amount.
 
-quietset measures **which** samples are unstable: `label_agreement`,
-`label_entropy`, `score_mad`, `decision` (Keep/Review/Drop), etc., computed
-from repeated observations of the same sample.
+This adapter reads quietset JSONL fields. It neither imports quietset nor
+reimplements its scoring logic.
 
-causasv's ASV attribution answers a different, narrower question: **given a
-DAG you supplied and a model fit on your data, how much of the model's
-ability to predict that instability is attributable to each upstream
-factor?**
+## Data layout
 
-This is **not**:
+One quietset `StabilityReport` summarizes repeated observations of a sample.
+To compare run conditions without losing the variation that produced the
+instability score, keep three disjoint groups:
 
-- **Causal discovery.** The DAG is yours; this workflow never infers or
-  suggests graph structure.
-- **An intervention-effect estimate.** "`evaluator_family` has the highest
-  ASV" does **not** mean "changing `evaluator_family` will reduce instability
-  by that many points." It means: under this DAG and this fitted model,
-  `evaluator_family` explains the most of the model's predictive signal for
-  the instability target. A factor with near-zero true effect can still rank
-  highest if it happens to correlate with the target in this particular
-  sample — ASV does not distinguish correlation from a causal mechanism; only
-  the DAG assumption does that, and the DAG assumption is yours to defend, not
-  something this workflow verifies.
-- A verdict. Use the ranking as a **hypothesis for a follow-up controlled
-  re-evaluation** (see "Turning ASV results into experiments" below) — never
-  as the sole justification for changing quietset's weights or thresholds.
-- A modification to quietset. This adapter only reads quietset's
-  `Observation`/`StabilityReport` JSONL by field name; quietset's source is
-  never imported, and its scoring logic is never re-implemented here.
+- `cell_features`: configuration varied between quietset runs, such as
+  `budget`, `loss_recipe`, or `evaluator_family`
+- `replicate_axes`: repeated-observation axes inside a run, such as
+  `evaluator_id` or `seed`; these are not model features
+- `sample_features`: intrinsic sample fields expected to stay constant for one
+  `sample_id`, such as `source_root_id`
 
-## Why not just join the two JSONL files naively?
-
-`StabilityReport` is computed **from** a sample's repeated observations
-(varying evaluator, budget, seed, ...). If you collapse those observations
-into one row per sample (e.g. via mean/mode), the columns you wanted to
-attribute to often become **constant** — there's nothing left to attribute.
-If you instead hold every condition fixed to get per-condition rows, each
-sample is left with a single observation, and quietset can no longer compute
-instability at all.
-
-This adapter resolves that by requiring you to separate:
-
-- **cell_features** — the config axis you want to compare (e.g. `budget`,
-  `loss_recipe`, `evaluator_family`). Constant *within* one run of quietset,
-  varying *across* runs.
-- **replicate_axes** — the axis quietset varied *within* one run to actually
-  produce the instability signal (e.g. `evaluator_id`, `seed`,
-  `shuffle_seed`). Never turned into a model feature.
-- **sample_features** — intrinsic properties of the sample itself, read from
-  `observations.jsonl` (e.g. `source_root_id`, `difficulty_proxy`). Expected
-  constant for a given `sample_id` across all its observations.
-
-These three sets are disjoint; overlapping any two is a hard error.
-
-## Input: the bundle manifest
-
-Run quietset once per condition you want to compare, then describe the
-result as a `causasv-instability-bundle-v1` manifest:
+Describe multiple conditions with a `causasv-instability-bundle-v1` manifest:
 
 ```json
 {
@@ -73,130 +34,96 @@ result as a `causasv-instability-bundle-v1` manifest:
       "config_id": "budget4_recipeA_familyX",
       "scored": "runs/cell01/scored.jsonl",
       "observations": "runs/cell01/observations.jsonl",
-      "features": {"budget": 4, "loss_recipe": "recipe_a", "evaluator_family": "family_x"},
+      "features": {
+        "budget": 4,
+        "loss_recipe": "recipe_a",
+        "evaluator_family": "family_x"
+      },
       "replicate_axes": ["evaluator_id", "seed", "shuffle_seed"]
     }
   ]
 }
 ```
 
-`scored`/`observations` paths are resolved relative to the manifest file.
-Each `(sample_id, config_id)` pair becomes one analysis row: the target comes
-from that cell's `scored.jsonl`; `cell_features` are stamped from the
-manifest; `sample_features` are read (and checked for internal consistency)
-from that cell's `observations.jsonl`.
+Paths are resolved relative to the manifest. Each `(sample_id, config_id)`
+pair becomes one analysis row.
 
-**Single aggregate file (no config comparison):** if you only have one plain
-`quietset score` run, pass `--observations`/`--scored` directly instead of a
-bundle. `cell_features` must be empty in that mode — a single aggregate
-`StabilityReport` has no config-level granularity to compare, and asking for
-it produces the explicit error:
+A single aggregate `scored.jsonl` can be read directly, but it cannot support
+`cell_features`: aggregation has already removed the configuration-level
+variation needed for that comparison.
 
-```
-aggregate scored report has lost config-level variation; provide per-cell
-scored files or config-scoped sample IDs
-```
+## Validation
 
-### Validation the adapter performs
+The adapter rejects:
 
-- `config_id` uniqueness, and `cell_features`/`sample_features`/
-  `replicate_axes` mutual disjointness (including the manifest's *actual*
-  per-cell `features` keys, not just the caller's declared lists).
-- **Mixed-file detection**: if `observations.jsonl` itself carries a field
-  matching a declared cell feature and that field *varies* within the cell,
-  the run is rejected rather than silently trusting the manifest's stamped
-  value — that would mean the file mixes multiple real conditions under one
-  `config_id`, and there's no safe way to guess which rows belong to which
-  condition without re-implementing quietset's own scoring.
-- Minimum observation counts per target (entropy/agreement/dispersion targets
-  need ≥2 observations — a single observation makes them undefined by
-  construction, not just noisy).
-- Global constant-feature check, evaluated on the **combined** table across
-  all cells (a feature being constant within one cell is expected and fine).
-- `seed`/`shuffle_seed` are blocked from `cell_features`/`sample_features` by
-  default — raw seed numbers carry no causal or ordinal meaning. Study seed
-  sensitivity via quietset's own `seed_sensitivity`/`shuffle_seed_sensitivity`
-  as the **target**, not as a feature. `--allow-raw-seed-feature` opts into
-  treating them as categorical anyway, with a warning that results won't
-  generalize to unseen seeds.
-- **Target leakage guard**: every `StabilityReport` field (except
-  `sample_id`/`n_observations`) is blocked from `cell_features`/
-  `sample_features` — they're all derived from the same label/score
-  distribution the target itself comes from.
-- No silent 0-fill for missing values: numeric gaps either hard-fail (default)
-  or drop the affected rows (`--missing-numeric drop_rows`), and categorical
-  gaps become an explicit `<missing>` category — never a manufactured zero.
+- duplicate `config_id` values
+- overlap among cell, replicate, and sample feature groups
+- a file that mixes several real conditions under one manifest cell
+- too few repeated observations for the selected target
+- features constant across the combined dataset
+- leakage from derived `StabilityReport` fields into model features
+- numeric missing values unless `drop_rows` is requested
+- a DAG whose feature nodes do not match the analysis table
+
+Raw `seed` and `shuffle_seed` are blocked as features by default because their
+numeric values have no causal or ordinal meaning. Use quietset's seed-sensitivity
+metric as the target, or opt in explicitly and treat raw seeds as categories.
+
+Categorical missing values become an explicit `<missing>` category. Numeric
+missing values are never silently replaced by zero.
 
 ## Targets
 
-| `--target` | Definition | Type | Min. observations |
-|---|---|---|---|
-| `label_entropy` | quietset's `label_entropy` | continuous | 2 |
-| `label_disagreement` | `1 - label_agreement` | continuous | 2 |
-| `score_mad` | quietset's `score_mad` | continuous | 2 |
-| `score_iqr` | quietset's `score_iqr` | continuous | 2 |
-| `score_sign_disagreement` | `1 - score_sign_agreement` | continuous | 2 |
-| `review_or_drop` | `decision in {review, drop}` | binary | 1 |
-| `lcb_risk` | `1 - label_agreement_lcb` | continuous | 2 |
+| Target | Definition | Minimum observations |
+| --- | --- | ---: |
+| `label_entropy` | quietset `label_entropy` | 2 |
+| `label_disagreement` | `1 - label_agreement` | 2 |
+| `score_mad` | quietset `score_mad` | 2 |
+| `score_iqr` | quietset `score_iqr` | 2 |
+| `score_sign_disagreement` | `1 - score_sign_agreement` | 2 |
+| `review_or_drop` | decision is Review or Drop | 1 |
+| `lcb_risk` | `1 - label_agreement_lcb` | 2 |
 
-## Model and grouped cross-validation
+## Model and attribution modes
 
-`fit_instability_model` fits `logistic` (binary) / `ridge` (continuous) by
-default — a simple, reproducible baseline, not the most accurate model
-available. `--model hgb` opts into `HistGradientBoosting{Classifier,Regressor}`.
+The default model is logistic regression for a binary target and ridge
+regression for a continuous target. `--model hgb` selects scikit-learn's
+histogram gradient boosting.
 
-Cross-validation is **grouped** (`GroupKFold`/`StratifiedGroupKFold`) by
-`--group-by` (default `sample_id`) so the same physical sample never crosses
-train/test — including when it appears under multiple config cells. Pass a
-`sample_features` column (e.g. `source_root_id`) to group by quietset's own
-correlated-content unit instead, mirroring `quietset calibrate --group-by`.
+Cross-validation is grouped by `sample_id` by default, so the same physical
+sample does not appear in both train and test folds. Use a content-group field
+such as `source_root_id` when that is the correct independence unit.
 
-`--min-cv-metric` has **no built-in default** — there is no universally
-correct performance floor. Omit it and no gate is applied; set it and a model
-that misses it produces a report where every feature lands in the
-`insufficient_evidence` summary bucket rather than a misleadingly confident
-ranking.
+`--min-cv-metric` has no default. If a requested quality floor is missed, all
+features are reported as `insufficient_evidence` rather than ranked as though
+the model were adequate.
 
-## Attribution modes
+Two attribution modes are available:
 
-- **`global`** — ASV over held-out predictive quality (negative log loss /
-  AUC for binary targets, negative RMSE for continuous), recomputing the
-  model on each coalition's features via the same grouped CV. Answers: *which
-  upstream factors carry the model's overall predictive signal for this
-  instability target?*
-- **`local`** — ASV over a single sample's prediction, with absent features
-  replaced per a baseline (reuses `causasv.helpers.make_tabular_value_fn`
-  directly). Answers: *for this one sample, which factors drove its predicted
-  instability?*
+- `global`: refits the model for each coalition and attributes held-out model
+  quality
+- `local`: attributes one sample's prediction using a chosen baseline for
+  absent features
 
-**Global and local values are on different scales and must never be compared
-directly** — the output schema keeps `mode` explicit for this reason.
+Global and local ASV values use different value functions and scales. Do not
+compare them directly.
 
-## DAG format and the `instability_prediction` sink
+## DAG contract
 
-`--dag` files use causasv's own `CausalDAG.to_json()`/`from_json()` format
-(`{"nodes": [...], "edges": [{"from": ..., "to": ...}]}`), so you can build one
-programmatically with the Python API and pass it straight through. The DAG's
-node set must exactly equal the dataset's feature set (`cell_features` ∪
-`sample_features`) — every declared feature needs a node, and every node needs
-to be a real feature.
+The DAG uses `CausalDAG.to_json()` / `from_json()` format. Its input nodes must
+equal `cell_features + sample_features`.
 
-The one exception: a designated sink node (default `instability_prediction`)
-representing the model's output, not an attributable input. If present with
-no outgoing edges, it and its incoming edges are stripped before building the
-DAG — it needs no ASV value of its own. If it has outgoing edges, that's
-rejected as a contradiction (a sink can't also be an intermediate node).
-
-Example DAG (`instability_dag.json`), matching a bundle whose
-`--cell-features` is `evaluator_family,budget,loss_recipe` and
-`--sample-features` is `difficulty_proxy` (the DAG's node set — sink
-excluded — must equal this exact feature set, or `load_attribution_dag`
-rejects it naming the difference):
+An optional `instability_prediction` node may appear as an output-only sink.
+The adapter removes it before attribution. It is rejected if it has outgoing
+edges.
 
 ```json
 {
   "nodes": [
-    "difficulty_proxy", "evaluator_family", "loss_recipe", "budget",
+    "difficulty_proxy",
+    "evaluator_family",
+    "loss_recipe",
+    "budget",
     "instability_prediction"
   ],
   "edges": [
@@ -208,94 +135,34 @@ rejects it naming the difference):
 }
 ```
 
-Multiple candidate DAGs are supported (repeat `--dag`); results are then
-checked for cross-DAG sensitivity (see below).
+Repeat `--dag` to compare several candidate DAGs. They must share the same node
+set.
 
-## Uncertainty and DAG sensitivity
+## Reading the report
 
-Every ASV comes with the full diagnostics `causasv.helpers.explain_safe`
-already provides: `stderr`, `ci_low`/`ci_high`, `selected_method`, `is_exact`,
-`ess`/`ess_ratio`, and seed-based `rank_stability` (kept as `null` when
-`is_exact` is true — there is no seed variance on the exact path).
+The `causasv-instability-attribution-v1` report includes:
 
-With multiple `--dag` flags, `dag_rank_stability` (mean pairwise Kendall τ
-across DAGs) and per-feature `dag_sensitive`/`sign_stable` flags are also
-reported. All supplied DAGs must share the same node set — comparing "the
-ASV of `evaluator_family`" across DAGs only means something if every DAG
-actually has that node.
+- ASV, standard error, confidence interval, and rank per feature
+- fitted model type, grouped-CV metric, and optional quality gate
+- selected ASV method, exactness, ESS, and seed stability
+- cross-DAG rank and sign sensitivity when several DAGs were supplied
+- warnings and a display bucket for each feature
 
-## Output schema (`causasv-instability-attribution-v1`)
+The display buckets are applied in this order:
 
-```json
-{
-  "schema_version": "causasv-instability-attribution-v1",
-  "target": "label_entropy",
-  "mode": "global",
-  "features": [
-    {
-      "name": "evaluator_family",
-      "asv": 0.31,
-      "stderr": 0.04,
-      "ci_low": 0.23,
-      "ci_high": 0.39,
-      "rank": 1,
-      "sign_stable": true,
-      "dag_sensitive": false
-    }
-  ],
-  "model": {
-    "type": "ridge",
-    "group_column": "source_root_id",
-    "cv_metric_name": "neg_rmse",
-    "cv_metric": 0.42,
-    "min_cv_metric": null,
-    "meets_min_cv_metric": null
-  },
-  "asv_diagnostics": {
-    "method": "exact_dag_sparse",
-    "is_exact": true,
-    "ess_ratio": 1.0,
-    "seed_rank_stability": null,
-    "dag_rank_stability": null
-  },
-  "warnings": []
-}
-```
+1. `insufficient_evidence`: the predictive model missed its requested gate
+2. `dag_sensitive`: sign or rank depends materially on the candidate DAG
+3. `uncertain`: the confidence interval includes zero
+4. `robustly_attributed`: none of the checks above fired
 
-`dag_rank_stability` and `seed_rank_stability` are `null`, not a fabricated
-`1.0`, whenever the corresponding comparison wasn't actually performed
-(single DAG; exact path). `meets_min_cv_metric` is `null` when no
-`--min-cv-metric` was requested — silence means "no gate", never "passed".
+`robustly_attributed` means only that this model, data, and DAG passed the
+configured diagnostics. It is not a causal conclusion.
 
-`summarize_attribution()` splits features into four **display** buckets, in
-priority order — none of them are a causal claim:
+Use a high-ranked feature to design a controlled follow-up. Change one factor,
+hold the others fixed, and rerun the evaluation. Do not change quietset weights
+or keep/review/drop thresholds from an ASV ranking alone.
 
-1. **`insufficient_evidence`** — the model missed its own requested quality
-   floor; every feature's attribution is suspect regardless of its own CI or
-   DAG-sensitivity.
-2. **`dag_sensitive`** — sign or rank changed enough across candidate DAGs
-   that the DAG assumption, not the data, is likely driving the result.
-3. **`uncertain`** — CI straddles zero; not distinguishable from no effect.
-4. **`robustly_attributed`** — none of the above fired. This means "this DAG
-   and model didn't flag it" — not "confirmed to matter".
-
-## Turning ASV results into experiments
-
-A high-ranked factor is a hypothesis, not a conclusion. Examples of the
-follow-up this workflow is meant to motivate:
-
-- `budget` ranks highest → a paired re-evaluation that changes only `budget`,
-  holding everything else fixed.
-- `evaluator_family` ranks highest → a re-evaluation restricted to one family
-  at a time.
-- `shuffle_seed` shows up via its target-side signal
-  (`shuffle_seed_sensitivity`) → an order-only ablation with `seed` fixed.
-- `loss_recipe` ranks highest → a matched-size recipe ablation.
-
-Do **not** change quietset's scoring weights or accept/reject thresholds on
-the basis of an ASV ranking alone.
-
-## Example
+## Command-line example
 
 ```bash
 python examples/quietset_label_instability.py \
@@ -310,17 +177,11 @@ python examples/quietset_label_instability.py \
   --output results/instability_attribution.json
 ```
 
-Multiple DAGs: repeat `--dag data/dag_a.json --dag data/dag_b.json`.
+Run the script with `--help` for grouped-CV, missing-value, local-sample, and
+multi-DAG options.
 
-Run `python examples/quietset_label_instability.py --help` for the full flag
-list (grouped CV, missing-value policy, constant-feature policy, local-mode
-sample selection, etc.).
+## Non-goals
 
-## Non-goals (this workflow does not implement)
-
-- Causal discovery, or any automatic DAG construction.
-- DoWhy-style intervention-effect estimation.
-- A dependency from quietset core to causasv, or vice versa.
-- A hardcoded, quietset-specific default DAG.
-- Automatic drop/keep decisions driven by ASV rank.
-- Causal conclusions drawn from ASV results alone.
+This workflow does not implement causal discovery, automatic DAG generation,
+intervention-effect estimation, automatic quietset decisions, or a dependency
+between the two projects' cores.

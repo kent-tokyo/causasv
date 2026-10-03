@@ -1,65 +1,48 @@
-# causasv — 基于非对称 Shapley 值的因果特征归因
+# causasv
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
+[![CodeQL](https://img.shields.io/badge/CodeQL-enabled-blue.svg)](https://github.com/kent-tokyo/causasv/security/code-scanning)
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
 [![PyPI](https://img.shields.io/pypi/v/causasv.svg)](https://pypi.org/project/causasv/)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-<br>
-[![MSRV](https://img.shields.io/badge/MSRV-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
-[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://doc.rust-lang.org/nomicon/meet-safe-and-unsafe.html)
 
 [English](README.md) | [日本語](README_ja.md) | **中文**
 
-`causasv` 在用户提供的有向无环图（DAG）上计算**非对称 Shapley 值（ASV）**，用于因果特征归因。这是一个以 Rust 为核心、附带 Python 绑定的引擎，专为需要特征重要性遵循已知因果结构的 XAI 工作流而设计。
+面向 Rust 和 Python 的因果非对称 Shapley 值计算库。
 
-## 何时使用 causasv
+`causasv`根据调用方提供的因果 DAG 和价值函数计算非对称 Shapley 值（ASV）。ASV 只在拓扑排序上平均边际贡献，因此原因不会在其后代之后加入联盟。
 
-**适合使用 causasv 的情况：**
-- 特征之间存在已知的因果 DAG
-- 标准 SHAP 可能通过后代或中介变量分配归因
-- 需要精确或带不确定性估计的近似 ASV
-- 需要 Rust 核心、Python 绑定和置信区间估计
-
-**不适合使用 causasv 的情况：**
-- 没有因果 DAG（→ 使用 SHAP 或 Captum）
-- 需要不依赖因果结构的通用模型可解释性
-- 需要深度学习层级或神经元归因
-- 需要因果效应估计或因果发现本身（→ 使用 DoWhy）
-
-## 什么是 ASV？
-
-非对称 Shapley 值（ASV）通过仅对**拓扑有效的特征排列**取平均来推广 Shapley 值，而非对所有排列取平均。给定因果 DAG G 和价值函数 v：
-
-```
-φ_i = (1 / |Π(G)|) Σ_{π ∈ Π(G)} [v(pre(i,π) ∪ {i}) − v(pre(i,π))]
-```
-
-其中 Π(G) 是 G 的所有线性扩展（拓扑排序）的集合，pre(i,π) 是在排列 π 中出现在特征 i 之前的特征集合。
-
-## ASV 与 SHAP 的区别
-
-标准 SHAP 忽略因果结构，对所有 n! 个特征排列取平均。ASV 将平均限制在与因果 DAG 一致的排列上——原因始终出现在其效果之前。这产生了遵循因果方向的归因结果。
-
-## 为什么因果 DAG 很重要？
-
-当特征之间存在因果关系时，SHAP 可能会将实际上由其后代节点中介的效果归因于某个变量。ASV 通过限制哪些排列被视为有效来防止这种情况。
+`causasv`不学习因果图、不训练模型，也不从数据中推断因果关系。它适用于已经拥有因果图，并能在库外说明其假设的场景。
 
 ## 安装
+
+PyPI 提供 Linux x86_64、macOS universal2 和 Windows x86_64 wheel：
 
 ```bash
 pip install causasv
 ```
 
-Linux (x86_64 manylinux)、macOS (universal2) 和 Windows (x86_64) 的 wheel 已发布到 [PyPI](https://pypi.org/project/causasv/)。Rust 用户请在 `Cargo.toml` 中添加：
+Rust：
 
 ```toml
 [dependencies]
 causasv = "0.8"
 ```
 
-## Rust 示例
+Rust 需要 1.85 或更高版本，Python 需要 3.9 或更高版本。
+
+## ASV 定义
+
+对于 DAG `G`，令`Π(G)`为其全部拓扑排序，`pre(i, π)`为排序`π`中特征`i`之前的特征集合：
+
+```text
+φᵢ = 1 / |Π(G)| · Σπ∈Π(G) [v(pre(i,π) ∪ {i}) - v(pre(i,π))]
+```
+
+标准 Shapley 值对所有排列求平均；ASV 只使用与给定 DAG 一致的排列。对于加性价值函数，两者相同；当特征交互依赖顺序时，两者可能不同。参见[与 SHAP 的比较](docs/comparison_shap.md)。
+
+## Rust 快速开始
 
 ```rust
 use causasv::{AsvExplainer, Dag, SamplingConfig};
@@ -71,329 +54,126 @@ fn main() -> Result<(), causasv::CausasvError> {
     let risk = dag.add_node("risk_score");
     dag.add_edge(education, income)?;
     dag.add_edge(income, risk)?;
-    dag.validate()?;
 
-    let explainer = AsvExplainer::new(dag);
-
-    // 通过重要性加权拓扑排序采样计算近似 ASV
-    let values = explainer.approximate(
-        |coalition| {
-            Ok(coalition.len() as f64)
-        },
+    let result = AsvExplainer::new(dag).auto(
+        |coalition| Ok(coalition.len() as f64),
         SamplingConfig::new(10_000).with_seed(42),
     )?;
 
-    for (node, value) in &values.values {
-        println!("节点 {:?}: ASV = {:.4}", node, value);
-    }
+    println!("{:?}", result.values);
     Ok(())
 }
 ```
 
-## Python 示例
+`auto()`在可行时选择精确算法，否则回退到带种子的自重要性采样。若近似结果还需要标准误和收敛信息，请使用`auto_quality()`。
 
-大多数用户推荐使用 `explain_quality()` 作为入口 — 可行时进行精确计算，否则回退到带置信区间的近似计算：
+## Python 快速开始
+
+推荐使用`explain_quality()`。它先尝试精确算法，无法使用时返回带不确定性诊断的自适应近似结果。
 
 ```python
-from causasv import CausalDAG, ASVExplainer, explain_quality
+from causasv import ASVExplainer, CausalDAG, explain_quality
 
-dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-explainer = ASVExplainer(dag)
+dag = CausalDAG.from_edges([
+    ("education", "income"),
+    ("income", "risk_score"),
+])
 
-info = explain_quality(
-    explainer,
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    ci=0.95,   # 包含 95% 置信区间
+result = explain_quality(
+    ASVExplainer(dag),
+    value_fn=lambda features: my_model_score(features),
     seed=42,
-)
-print(info["values"])           # dict[str, float] — 每个特征的 ASV 值
-print(info["ci_low"])           # dict[str, float] — 95% CI 下界
-print(info["ci_high"])          # dict[str, float] — 95% CI 上界
-print(info["selected_method"])  # 例如 "exact_dag_sparse"、"uniform_sparse_adaptive" 或 "uniform_sparse_adaptive_batch"
-print(info["stderr"])           # dict[str, float] — 每个特征的标准误差
-```
-
-Python 的 `value_fn` 接收联合中存在的特征名排序列表，必须返回一个浮点数。
-
-**低级 API** — 显式指定方法时使用 `explain_with_diagnostics()`：
-
-```python
-info = explainer.explain_with_diagnostics(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    method="approx",
-    n_samples=10_000,
-    seed=42,
-)
-print(info["values"])          # dict[str, float]
-print(info["ess"])             # float — ESS ≈ n_samples 表示可靠
-print(info["ess_ratio"])       # float — ESS / n_samples，接近 1 为好
-print(info["method"])          # str — 输入的方法名
-print(info["selected_method"]) # str — auto() 实际选择的方法
-print(info["fallback_from"])   # str | None — 回退来源
-```
-
-使用 `explain_adaptive()` 进行自动收敛检测和逐特征置信区间：
-
-```python
-info = explainer.explain_adaptive(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    min_samples=1_000,
-    max_samples=100_000,
-    batch_size=1_000,
-    seed=42,
-    ci=0.95,          # 可选：添加 ci_low / ci_high
-)
-print(info["values"])     # dict[str, float]
-print(info["stderr"])     # dict[str, float] — 每个特征的 IS 标准误差
-print(info["ci_low"])     # dict[str, float] — 95% 置信区间下界
-print(info["ci_high"])    # dict[str, float] — 95% 置信区间上界
-print(info["converged"])  # bool — 是否在 max_samples 前达到 rel_tol
-print(info["ess_ratio"])  # float — ESS / n_samples
-```
-
-对于大型模型（逐联合调用代价高昂），将 `value_fn_batch` 传入 `explain_quality()`。当 n ≤ 63 时使用均匀稀疏自适应批量采样（ESS = n_samples，无 IS 方差，始终返回 CI）：
-
-```python
-# value_fn_batch 接收 list[list[str]]，返回 list[float]
-info = explain_quality(
-    explainer,
-    value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
     ci=0.95,
-    seed=42,
 )
-print(info["values"])           # dict[str, float]
-print(info["ci_low"])           # dict[str, float]
-print(info["selected_method"])  # "uniform_sparse_adaptive_batch"（n>63 为 "approx_adaptive_batch"）
+
+print(result["values"])
+print(result["selected_method"])
+print(result["stderr"])
+print(result["ci_low"], result["ci_high"])
 ```
 
-批量路径将 Python GIL 往返从 O(n × batch_size) 降至 O(unique_masks_per_batch)。如需显式使用 IS 自适应批量评估，请直接调用 `explainer.explain_adaptive_batch()`。
-```
+回调接收排序后的`list[str]`，表示联盟中的特征。对于开销较大的模型，可传入`value_fn_batch`代替`value_fn`，在一次 Python 调用中评估多个联盟。
 
-确定性并行近似，同时传入 `seed` 和 `parallel=True`：
+## 选择计算方法
 
-```python
-info = explainer.explain_with_diagnostics(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    method="approx",
-    n_samples=100_000,
-    seed=42,
-    parallel=True,
-    num_threads=4,
-)
-print(info["deterministic"])  # True when seed + parallel
-```
+除非正在测试或基准比较特定算法，否则优先使用`auto()`或`auto_quality()`。
 
-使用 `explain_stability()` 验证近似排名在不同种子下的一致性：
+| 方法 | 用途 | 限制 |
+| --- | --- | --- |
+| `exact` | 穷举参考实现 | 实际约为`n <= 8` |
+| `exact_tree` | 有根树精确 DP | 受树形状预算约束；位掩码上限`n <= 64` |
+| `exact_dag` | 稠密序理想精确 DP | `n <= 20` |
+| `exact_dag_sparse` | 稀疏序理想精确 DP | 默认`n <= 28`；配置后最高 63 |
+| `uniform_sparse` | 等概率拓扑排序采样 | `n <= 63` |
+| `approx` | 重要性采样近似 | 无节点数上限 |
 
-```python
-from causasv import explain_stability
+精确计算是否可行还取决于图结构、状态数和内存。正式限制和自动分派规则见[正确性说明](docs/correctness.md#exact-method-bounds)。
 
-result = explain_stability(
-    explainer,
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    seeds=[1, 2, 3, 4, 5],
-    method="approx",
-    n_samples=10_000,
-)
-print(result["rank_stability"])  # 平均 Kendall tau；1.0 = 完全稳定
-print(result["std_values"])      # dict[str, float] — 越小越稳定
-print(result["mean_values"])     # dict[str, float] — 种子间的平均 ASV
-```
+使用近似结果时：
 
-使用 `ASVEnsembleExplainer` 测量多个候选 DAG 间的敏感性：
+- 需要复现时固定随机种子
+- 检查标准误、置信区间、收敛状态和回退原因
+- 对重要性采样路径检查`ess_ratio`
+- 若排序会影响决策，应使用多个种子重复计算
 
-```python
-from causasv import CausalDAG, ASVEnsembleExplainer
+`explain_safe()`会自动执行主要检查，`explain_stability()`报告跨种子的排序稳定性。
 
-dag1 = CausalDAG.from_edges([("A", "B"), ("B", "C")])
-dag2 = CausalDAG.from_edges([("A", "B"), ("A", "C")])
-ensemble = ASVEnsembleExplainer([dag1, dag2])
-result = ensemble.explain_with_sensitivity(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    method="auto",
-)
-print(result["mean_values"])     # dict[str, float] — DAG 间的平均 ASV
-print(result["std_values"])      # dict[str, float] — DAG 间的标准差
-print(result["rank_stability"])  # float — 平均 Kendall tau
-print(result["per_dag_values"])  # list[dict[str, float]]
-```
+## 主要功能
 
-检查和导出 DAG：
+- DAG 验证、拓扑排序和拓扑序枚举
+- 穷举、有根树、一般 DAG 和稀疏 DAG 精确 ASV
+- 固定样本、自适应、均匀稀疏、并行和批量近似
+- 确定性种子、ESS、标准误、置信区间和回退诊断
+- Rust 与 Python API
+- CPDAG 表示和一致 DAG 扩展
+- d-convex 与 strong d-convex 图缩减
+- 表格模型和 DAG 敏感性的可选 Python 辅助工具
 
-```python
-dag.nodes()                     # ["education", "income", "risk_score"]
-dag.edges()                     # [("education", "income"), ("income", "risk_score")]
-dag.to_dot()                    # 'digraph {\n  education -> income;\n  ...\n}'
-dag.to_json()                   # '{"nodes":[...],"edges":[...]}'
-dag.ancestors("risk_score")     # ["education", "income"]
-dag.descendants("education")    # ["income", "risk_score"]
-dag.topological_layers()        # [["education"], ["income"], ["risk_score"]]
+图缩减同样只处理调用方提供的图，不执行因果发现或效应估计。其假设和独立实现记录见[strong d-convex hull](docs/strong_d_convex_hulls.md)。
 
-# 从 JSON 恢复 DAG
-dag2 = CausalDAG.from_json(dag.to_json())
+## 文档
 
-# 转换为 networkx（需单独安装 networkx）
-import networkx as nx
-G = nx.DiGraph(dag.edges())
-```
+- [正确性与方法限制](docs/correctness.md)
+- [Criterion 基准结果](docs/benchmarks.md)
+- [Python 标准基准语料](docs/benchmark_corpus.md)
+- [ASV 与 SHAP 比较](docs/comparison_shap.md)
+- [strong d-convex hull 假设](docs/strong_d_convex_hulls.md)
+- [quietset 不稳定性集成](docs/integrations/quietset_label_instability.md)
+- [Rust API](https://docs.rs/causasv)
 
-sklearn 兼容模型的高级 API `TabularExplainer`（需要 numpy）：
-
-```python
-from causasv import CausalDAG, TabularExplainer
-
-dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-
-explainer = TabularExplainer.from_model(
-    model=my_classifier,
-    dag=dag,
-    background=X_train,
-    feature_names=["education", "income", "risk_score"],
-)
-values = explainer.explain_instance(X_test[0], method="auto")
-```
-
-## 精确计算 vs 近似计算
-
-| 方法 | 适用场景 | API |
-|------|---------|-----|
-| `exact` | 小型 DAG（n ≤ ~8）；枚举所有线性扩展 | `explainer.exact(value_fn)` |
-| `exact_tree` | 有根有向树；顺序理想 DP；超出成本预算的茂密形状会被拒绝（见下文） | `explainer.exact_tree(value_fn)` / `explainer.exact_tree_with_config(value_fn, &config)` |
-| `exact_dag` | 一般 DAG，n ≤ 20；密集顺序理想 DP | `explainer.exact_dag(value_fn)` |
-| `exact_dag_sparse` | 稀疏 DAG，n ≤ 28；仅对有效顺序理想 BFS | `explainer.exact_dag_sparse(value_fn)` |
-| `approx` | 任意 DAG（n > 28 或超出内存限制）；IS 采样 | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
-
-`auto` 调度：n ≤ 8 → `exact`；有根树 → 若形状符合 `ExactTreeConfig` 的成本预算则 `exact_tree`，否则若可行（n ≤ 63 且顺序理想数 ≤ 250k 预检）则 `exact_dag_sparse`，否则 `approx`；n ≤ 20 → 若顺序理想数不超过密集状态数的一半则 `exact_dag_sparse` 否则 `exact_dag`；20 < n ≤ 28 → `exact_dag_sparse`；28 < n ≤ 63 → 若顺序理想数 ≤ 250k（稀疏预检）则 `exact_dag_sparse` 否则 `approx`；n > 63 → `approx`。
-
-**n 的上限实际作用于何处：**
-- `exact` / `exact_tree` / `exact_dag`：各自较小、方法特定的 n 上限（暴力法约为 8；`exact_tree` 依形状而定；密集 DP 为 20）。它们使用 `2^n` 型密集表示，此上限不会被取消。
-- `exact_dag_sparse` / `uniform_sparse` / `uniform_sparse_adaptive`：n ≤ 63 —— 稀疏顺序理想 DP 仍将联盟打包进 `u64`，因此该上限是结构性的，而非预检策略的选择。
-- `approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch`：**没有节点数限制。** 对于 n > 64，联盟内部使用可增长的位集表示，而非 `u64` 掩码（见 `src/coalition.rs`）。大型 DAG 的实际限制因素是 `n_samples`、值函数的开销以及联盟缓存的内存预算，而非 n 本身。
-
-`exact_tree` 的成本不仅取决于节点数 n，还取决于树的*形状*：一个拥有多个宽/深兄弟子树的节点会产生巨大的笛卡尔积。`exact_tree`（以及 `auto`/`auto_quality`）会在实际枚举前运行 O(n) 的预检（`ExactTreeConfig`，默认预算为单节点 50,000 项/总计 200,000 项），超出预算时返回 `ExactTreeBudgetExceeded` 或回退，而不是真的去枚举。完整说明见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)，触发该修复的具体案例见 [issue #36](https://github.com/kent-tokyo/causasv/issues/36)。
-
-`exact_dag_sparse` 只访问有效顺序理想（所有节点的父节点也存在的集合）。对于稀疏 DAG，这可能比 2^n 少几个数量级，返回 `n_order_ideals`、`state_ratio` 和 `memory_mb` 诊断信息。
-
-近似估计器使用自归一化重要性采样来校正前沿采样器引入的偏差，因此即使对于近似结果，效率公理（Σφ_i = v(V) − v(∅)）也精确成立。
-
-## 状态
-
-实验性 — v0.8.8。在 v1.0 之前公共 API 可能会发生变化。
-
-## 算法状态
-
-| 方法 | 实现 | 备注 |
-|------|------|------|
-| `exact` | 枚举所有线性扩展 | 参考 oracle；实用范围 n ≤ ~8 |
-| `exact_tree` | 有根树验证 + 顺序理想 DP + 成本预算预检 | 高效；使用钩子长度公式；超出 `ExactTreeConfig` 预算的形状会被拒绝而非挂起 |
-| `exact_dag` | 2^n 状态上的顺序理想 DP | 一般 DAG，n ≤ 20；O(2^n × n) |
-| `exact_dag_sparse` | 有效顺序理想 BFS + 懒惰 dp_ind | 稀疏 DAG，n ≤ 28；内存有界 |
-| `approx` | 拓扑排序上的自归一化 IS | 任意 DAG；校正前沿采样器偏差 |
-
-## 特性矩阵
-
-| 特性 | Rust | Python | 状态 |
-|------|:----:|:------:|------|
-| 精确 ASV（暴力枚举） | ✓ | ✓ | 稳定 |
-| 有根树精确 DP | ✓ | ✓ | 实验性 |
-| 一般 DAG 精确 DP（n ≤ 20） | ✓ | ✓ | 实验性 |
-| 稀疏 DAG 精确 DP（n ≤ 28） | ✓ | ✓ | 实验性 |
-| 带 ESS 的近似 ASV | ✓ | ✓ | 实验性 |
-| 自适应近似 + CI | ✓ | ✓ | 实验性 |
-| 种子确定性并行近似 | ✓ | ✓ | 实验性 |
-| 批量联合评估 | ✓ | ✓ | 实验性 |
-| sklearn / NumPy 辅助函数（TabularExplainer） | — | ✓ | 实验性 |
-| DAG 集成 / 敏感性 ASV | — | ✓ | 实验性 |
-| DAG 结构检查 | — | ✓ | 实验性 |
-| 图导出（DOT / JSON / networkx） | — | ✓ | 实验性 |
-
-## 论文对应
-
-*Beyond Shapley: Efficient Computation of Asymmetric Shapley Values*
-
-| 算法组件 | causasv |
-|---------|---------|
-| ASV 定义 | ✓ `exact`（暴力 oracle） |
-| 有根树精确算法 | ✓ `exact_tree`（顺序理想 DP + 钩子长度公式） |
-| 一般 DAG 精确 DP | ✓ `exact_dag`（顺序理想 DP，n ≤ 20） |
-| 一般 DAG 的重要性采样近似 | ✓ `approx` |
-| 稀疏 DAG 精确 DP | ✓ `exact_dag_sparse`（顺序理想 BFS，n ≤ 28） |
-| 因果发现 | — 超出范围 |
-
-## 性能
-
-Apple M 系列（arm64，release 构建）部分结果。`v(S) = |S|`。完整表格见 [docs/benchmarks.md](docs/benchmarks.md)。
-
-| DAG | n | 方法 | 时间 |
-|-----|---|------|------|
-| 链式 | 7 | `exact`（暴力） | 2.7 µs |
-| 平衡树 | 15 | `exact_tree`（DP） | 2.8 ms |
-| 毛毛虫树 | 10 | `exact_tree`（DP） | 170 µs |
-| 链式 | 10 | `exact_dag`（密集 DP） | **23 µs** |
-| 链式 | 16 | `exact_dag`（密集 DP，65k 状态） | 3.0 ms |
-| 链式 | 16 | `exact_dag_sparse`（17 个顺序理想，经由 `auto`） | **11 µs**（约280倍） |
-| 链式 | 24 | `exact_dag_sparse` | 15 µs |
-| 两条并行链 | 20 | `exact_dag`（密集，100万状态） | **55 ms** |
-| 两条并行链 | 20 | `exact_dag_sparse`（121状态） | **91 µs**（约600倍） |
-| 菱形 | 10 | `approx` 种子（10k 采样） | **16 ms** |
-| 菱形 | 10 | `approximate_adaptive_batched`（10k 上限） | 2.4 ms |
-| 链式 | 20 | `approx` 串行种子（10k） | **19 ms** |
-| 链式 | 20 | `approx` 并行 4 线程（10k） | 7.4 ms |
-| 平衡树 | 31 | `approx` 种子（10k 采样） | 83 ms |
-| 链式 | 64 | `approx` 串行种子（2k，u64 后端） | 2.48 ms |
-| 链式 | 65 | `approx` 串行种子（2k，large 后端） | 4.33 ms |
-| 链式 | 128 | `approx` 串行种子（2k，large 后端） | 8.55 ms |
-| 链式 | 256 | `approx` 串行种子（2k，large 后端） | 22.0 ms |
-
-n=64→65 这一行是联盟表示切换的边界（见上文"n 的上限实际作用于何处"）：每个样本的成本平滑增长（本次测量中边界本身增加约 75%——这台机器上 `cargo bench` 在不同会话间噪声较大，同样未改动的代码在早先一次测量中只增加约 37%，细节见 [docs/benchmarks.md](docs/benchmarks.md) 的说明——之后大致随 n 线性增长），两次测量中 n=65 处都没有不连续的断层——联盟缓冲区本身在样本间复用而不重新分配，因此这是每次缓存查找时哈希 `&[u64]` 切片（而非裸 `u64`）的开销。批量（batched）路径的 n > 64 联盟缓存现在跨整个调用的所有轮次共享（与非批量路径相同的有上限、仅准入式设计），因此在链式这类轮次间重复联盟很多的形状上，`value_fn_batch` 总共只会被调用一次，而不是每轮调用一次。不过本 crate 自身的基准测试使用的是廉价的合成回调，因此这里的边界跳跃反映的仍是每轮联盟键管理（快照、排序、去重）的开销，而非回调本身的开销——调用次数的减少真正带来收益的场景是开销较大的值函数（例如真实的 Python 模型）。并行、自适应、批量以及非树形状的测量结果与这一对比的细节见 [docs/benchmarks.md](docs/benchmarks.md) 与 [docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64)。
-
-这棵 n=31 的平衡树刻意使用 `approx` 而非 `exact_tree` 进行基准测试：该形状的单节点成本（176,020 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）超出了 `ExactTreeConfig` 的默认预算，实际运行 `exact_tree` 需要约 20-25 秒。`auto`/`auto_quality` 通过 O(n) 预检自动识别这一点并回退，而不会真的运行数十秒。
-
-使用 `cargo bench` 重现结果。
+测量值只适用于文档所列版本、硬件、图和价值函数，不代表一般性能或归因质量保证。
 
 ## 当前限制
 
-- 暴力精确 ASV 对线性扩展数量呈指数级增长；仅适用于 n ≤ ~8 的节点。
-- `exact_tree` 需要有根有向树（单根，所有其他节点入度为 1），**并且**其单节点组合成本需符合 `ExactTreeConfig` 的预算（默认 50,000 / 200,000 — 见 [docs/correctness.md](docs/correctness.md#exact-method-bounds)）；n 较小但宽/深的树仍可能被拒绝。n ≤ 20 的一般 DAG 使用 `exact_dag`，n ≤ 28 的稀疏 DAG 使用 `exact_dag_sparse`。更大的 DAG，以及仅因节点数而被 `exact_tree` 拒绝的 n > 64 有根树，请使用 `approx` / `approx_adaptive` / `approx_adaptive_batch`——它们没有节点数上限，`auto`/`auto_quality` 已经会自动回退到它们。
-- 没有内置的因果发现、模型训练或自动图构建。
+- 因果图和价值函数必须由调用方提供。
+- 即使节点数不大，高度分支的树也可能因组合成本超过`ExactTreeConfig`预算而被`exact_tree`拒绝。
+- 稠密和稀疏精确方法受位掩码节点上限约束。重要性采样在 65 个及以上节点时切换到大联盟后端。
+- CPDAG 验证检查结构和一致扩展是否存在，但不证明每条有向边都是真实等价类中的必然边。
+- 图缩减保证依赖库无法自行验证的分布和图假设。
 
-## 与其他工具的比较
+## 状态
 
-`causasv` 不是 SHAP 的替代品，也不是通用可解释性框架。它解决一个具体问题：
+实验性 — v0.8.8。公开 API 在 v1.0 之前可能变化。
 
-> 在用户提供的因果 DAG 上计算非对称 Shapley 值。
+小图上的穷举实现是优化算法的正确性参考。已发布和未发布的变更见[CHANGELOG.md](CHANGELOG.md)。
 
-| 工具 | 焦点 | ASV / 因果 DAG |
-|------|------|---------------|
-| [SHAP](https://github.com/shap/shap) | 通用 Shapley / SHAP | 否 — 仅标准 Shapley |
-| [Captum](https://captum.ai/) | PyTorch 模型可解释性 | 否 |
-| [shapr](https://github.com/NorskRegnesentral/shapr) | 条件 / 因果 Shapley（R + Python） | 是 — 更广泛的范围，R 优先 |
-| [shapflex](https://pypi.org/project/shapflex/) | 带因果知识的 ASV（Python alpha） | 是 — 类似概念 |
-| **causasv** | 用户提供因果 DAG 上的 ASV | **核心焦点** |
-
-## 构建 Python 绑定
+## 构建 Python 扩展
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install maturin pytest
 cd py
-python -m venv .venv && source .venv/bin/activate
-pip install maturin
 maturin develop --features python
-python -m pytest tests/
+python -m pytest
 ```
 
 ## 引用
 
-> Fryer, D., Strümke, I., & Nguyen, H. (2021). *Shapley values for feature selection: The good, the bad, and the axioms.* IEEE Access.
+项目引用信息位于[CITATION.cff](CITATION.cff)。ASV 设计受*Beyond Shapley: Efficient Computation of Asymmetric Shapley Values*启发。
 
-关于非对称公式和高效树计算，请参阅启发本库的论文：
-
-> Beyond Shapley: Efficient Computation of Asymmetric Shapley Values
+图缩减模块独立实现了 Deng、Sun、Li 和 Liu 的“Estimate Collapsibility of Causal Effects in Completed Partial DAGs via Strong d-Convex Hulls,” arXiv:2606.08941 (2026)中的数学定义。参见[引用与适用范围](docs/strong_d_convex_hulls.md)。
 
 ## 许可证
 
-在以下任一许可证下授权：
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-由您选择。
+可选择[Apache-2.0](LICENSE-APACHE)或[MIT](LICENSE-MIT)许可证。

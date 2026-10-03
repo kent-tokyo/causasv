@@ -1,65 +1,57 @@
-# causasv — Causal Feature Attribution via Asymmetric Shapley Values
+# causasv
 
 [![CI](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml/badge.svg)](https://github.com/kent-tokyo/causasv/actions/workflows/ci.yml)
+[![CodeQL](https://img.shields.io/badge/CodeQL-enabled-blue.svg)](https://github.com/kent-tokyo/causasv/security/code-scanning)
 [![Crates.io](https://img.shields.io/crates/v/causasv.svg)](https://crates.io/crates/causasv)
 [![PyPI](https://img.shields.io/pypi/v/causasv.svg)](https://pypi.org/project/causasv/)
 [![Docs.rs](https://docs.rs/causasv/badge.svg)](https://docs.rs/causasv)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-<br>
-[![MSRV](https://img.shields.io/badge/MSRV-1.85%2B-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
-[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://doc.rust-lang.org/nomicon/meet-safe-and-unsafe.html)
 
 **English** | [日本語](README_ja.md) | [中文](README_zh.md)
 
-`causasv` computes **Asymmetric Shapley Values (ASV)** for causal feature attribution over user-supplied DAGs. It is a Rust-first engine with Python bindings, designed for XAI workflows where feature importance should respect known causal structure.
+Fast causal Asymmetric Shapley Values for Rust and Python.
 
-## When to use causasv
+`causasv` computes Asymmetric Shapley Values (ASV) over a causal DAG and value
+function supplied by the caller. ASV averages marginal contributions over
+topological orderings, so a cause is never introduced after its descendants.
 
-**Use causasv when:**
-- you have a known causal DAG among your features
-- standard SHAP may assign credit through descendants or mediators
-- you need exact or uncertainty-aware approximate ASV
-- you want a fast Rust core with Python bindings and CI bounds on estimates
+`causasv` does not learn causal graphs, train models, or infer causality from
+data. Use it when the graph is already available and its assumptions can be
+defended outside this library.
 
-**Do not use causasv when:**
-- you do not have a causal DAG (→ use SHAP or Captum)
-- you need generic model explainability without causal structure
-- you need deep learning layer or neuron attribution
-- you need causal effect estimation or discovery itself (→ use DoWhy)
+## Install
 
-## What is ASV?
-
-Asymmetric Shapley Values (ASV) generalize Shapley values by averaging only over **topologically valid orderings** of features, rather than all permutations. Given a causal DAG G and a value function v:
-
-```
-φ_i = (1 / |Π(G)|) Σ_{π ∈ Π(G)} [v(pre(i,π) ∪ {i}) − v(pre(i,π))]
-```
-
-where Π(G) is the set of all linear extensions (topological orderings) of G, and pre(i,π) is the set of features appearing before feature i in ordering π.
-
-## How ASV differs from SHAP
-
-Standard SHAP averages over all n! feature permutations, ignoring causal structure. ASV restricts the average to permutations consistent with the causal DAG — causes always appear before their effects. This produces attributions that respect the direction of causality.
-
-## Why causal DAGs matter
-
-When features have causal relationships, SHAP can assign attribution to a variable for effects that are actually mediated by its descendants. ASV prevents this by constraining which orderings are considered valid.
-
-## Installation
+Python wheels are published for Linux x86_64, macOS universal2, and Windows
+x86_64:
 
 ```bash
 pip install causasv
 ```
 
-Wheels for Linux (x86_64 manylinux), macOS (universal2), and Windows (x86_64) are published on [PyPI](https://pypi.org/project/causasv/). For Rust, add to `Cargo.toml`:
+Rust:
 
 ```toml
 [dependencies]
 causasv = "0.8"
 ```
 
-## Rust example
+The Rust crate requires Rust 1.85 or newer. Python requires 3.9 or newer.
+
+## ASV in one formula
+
+For a DAG `G`, let `Π(G)` be its topological orderings and `pre(i, π)` the
+features before `i` in ordering `π`:
+
+```text
+φᵢ = 1 / |Π(G)| · Σπ∈Π(G) [v(pre(i,π) ∪ {i}) - v(pre(i,π))]
+```
+
+Standard Shapley values average over every permutation. ASV uses only
+permutations allowed by the supplied DAG. They agree for additive value
+functions and can differ when feature interactions depend on order. See the
+[SHAP comparison](docs/comparison_shap.md) for a worked example.
+
+## Rust quick start
 
 ```rust
 use causasv::{AsvExplainer, Dag, SamplingConfig};
@@ -71,505 +63,154 @@ fn main() -> Result<(), causasv::CausasvError> {
     let risk = dag.add_node("risk_score");
     dag.add_edge(education, income)?;
     dag.add_edge(income, risk)?;
-    dag.validate()?;
 
-    let explainer = AsvExplainer::new(dag);
-
-    // Approximate ASV via importance-weighted topological order sampling.
-    let values = explainer.approximate(
-        |coalition| {
-            // User-supplied value function: score given a coalition of features.
-            Ok(coalition.len() as f64)
-        },
+    let result = AsvExplainer::new(dag).auto(
+        |coalition| Ok(coalition.len() as f64),
         SamplingConfig::new(10_000).with_seed(42),
     )?;
 
-    for (node, value) in &values.values {
-        println!("Node {:?}: ASV = {:.4}", node, value);
-    }
+    println!("{:?}", result.values);
     Ok(())
 }
 ```
 
-## Python example
+`auto()` uses an exact method when feasible and falls back to seeded
+importance sampling. Use `auto_quality()` when approximate paths also need
+standard errors and convergence metadata.
 
-For most users, `explain_quality()` is the recommended entry point — it selects exact computation when feasible and falls back to uncertainty-aware approximate sampling with confidence intervals:
+## Python quick start
+
+`explain_quality()` is the recommended Python entry point. It tries exact
+methods first and otherwise returns an adaptive estimate with uncertainty
+diagnostics.
 
 ```python
-from causasv import CausalDAG, ASVExplainer, explain_quality
+from causasv import ASVExplainer, CausalDAG, explain_quality
 
-dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-explainer = ASVExplainer(dag)
+dag = CausalDAG.from_edges([
+    ("education", "income"),
+    ("income", "risk_score"),
+])
 
-info = explain_quality(
-    explainer,
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    ci=0.95,   # include 95% confidence intervals
+result = explain_quality(
+    ASVExplainer(dag),
+    value_fn=lambda features: my_model_score(features),
     seed=42,
-)
-print(info["values"])           # dict[str, float] — ASV per feature
-print(info["ci_low"])           # dict[str, float] — 95% CI lower bounds
-print(info["ci_high"])          # dict[str, float] — 95% CI upper bounds
-print(info["selected_method"])  # e.g. "exact_dag_sparse", "uniform_sparse_adaptive", or "uniform_sparse_adaptive_batch"
-print(info["stderr"])           # dict[str, float] — per-feature standard error
-```
-
-The Python `value_fn` receives a sorted list of feature names present in the coalition and must return a float.
-
-**Lower-level API** — for explicit method control, use `explain_with_diagnostics()`:
-
-```python
-info = explainer.explain_with_diagnostics(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    method="approx",
-    n_samples=10_000,
-    seed=42,
-)
-print(info["values"])     # dict[str, float]
-print(info["ess"])        # float — ESS ≈ n_samples means reliable; ESS ≪ n_samples means high variance
-print(info["ess_ratio"])  # float — ESS / n_samples ∈ (0, 1]; close to 1 is good
-print(info["n_samples"])  # int
-print(info["seed"])       # int | None
-print(info["is_exact"])   # bool
-print(info["method"])     # str — the method name passed in (e.g. "approx")
-```
-
-Use `explain_adaptive()` for automatic convergence detection and per-feature confidence intervals:
-
-```python
-info = explainer.explain_adaptive(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    min_samples=1_000,
-    max_samples=100_000,
-    batch_size=1_000,
-    seed=42,
-    ci=0.95,          # optional: add ci_low / ci_high to result
-)
-print(info["values"])     # dict[str, float]
-print(info["stderr"])     # dict[str, float] — IS standard error per feature
-print(info["ci_low"])     # dict[str, float] — lower bound of 95% confidence interval
-print(info["ci_high"])    # dict[str, float] — upper bound of 95% confidence interval
-print(info["converged"])  # bool — True if rel_tol was reached before max_samples
-print(info["ess_ratio"])  # float — ESS / n_samples; close to 1 is good
-```
-
-For large models where calling the value function once per coalition is slow, pass `value_fn_batch` to `explain_quality()`. This routes to uniform sparse adaptive batch sampling (ESS = n_samples, no IS variance, CI always returned) for n ≤ 63:
-
-```python
-# value_fn_batch receives list[list[str]] and must return list[float]
-info = explain_quality(
-    explainer,
-    value_fn_batch=lambda coalitions: [my_model_score(c) for c in coalitions],
     ci=0.95,
-    seed=42,
 )
-print(info["values"])           # dict[str, float]
-print(info["ci_low"])           # dict[str, float]
-print(info["selected_method"])  # "uniform_sparse_adaptive_batch" (or "approx_adaptive_batch" for n>63)
+
+print(result["values"])
+print(result["selected_method"])
+print(result["stderr"])
+print(result["ci_low"], result["ci_high"])
 ```
 
-The batched path reduces Python GIL round-trips from O(n × batch_size) to O(unique_masks_per_batch). For explicit IS-adaptive batched evaluation, use `explainer.explain_adaptive_batch()` directly.
+The callback receives a sorted `list[str]` containing the features in the
+coalition. For an expensive model, pass `value_fn_batch` instead of
+`value_fn` to evaluate many coalitions per Python call.
 
-For deterministic parallel approximation, pass `parallel=True` with a `seed`:
+## Choosing a method
 
-```python
-info = explainer.explain_with_diagnostics(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    method="approx",
-    n_samples=100_000,
-    seed=42,
-    parallel=True,
-    num_threads=4,   # None = rayon default
-)
-print(info["deterministic"])  # True when seed + parallel
-```
+Prefer `auto()` or `auto_quality()` unless a test or benchmark requires a
+specific algorithm.
 
-Use `explain_stability()` to verify that approximate rankings are consistent across seeds:
+| Method | Use | Bound |
+| --- | --- | --- |
+| `exact` | brute-force reference oracle | practical around `n <= 8` |
+| `exact_tree` | exact rooted-tree DP | shape-budgeted; bitmask limit `n <= 64` |
+| `exact_dag` | exact dense order-ideal DP | `n <= 20` |
+| `exact_dag_sparse` | exact sparse order-ideal DP | default `n <= 28`; configurable up to 63 |
+| `uniform_sparse` | equal-probability topological sampling | `n <= 63` |
+| `approx` | importance-sampling estimate | no node-count limit |
 
-```python
-from causasv import explain_stability
+Exact feasibility depends on graph structure, state count, and memory—not only
+on node count. The canonical limits and dispatch rules are in
+[Correctness](docs/correctness.md#exact-method-bounds).
 
-result = explain_stability(
-    explainer,
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    seeds=[1, 2, 3, 4, 5],
-    method="approx",
-    n_samples=10_000,
-)
-print(result["rank_stability"])   # mean pairwise Kendall tau; 1.0 = perfectly stable
-print(result["std_values"])       # dict[str, float] — small means stable estimates
-print(result["mean_values"])      # dict[str, float] — mean ASV across seeds
-```
+For approximate results:
 
-Use `explain_safe()` to apply the diagnostics checklist above automatically instead of
-checking `ess_ratio`/`rank_stability`/CI bounds by hand:
+- keep a seed when reproducibility matters
+- inspect `stderr`, confidence intervals, convergence, and fallback metadata
+- inspect `ess_ratio` for importance-sampling paths
+- rerun across seeds when feature ranking is consequential
 
-```python
-from causasv import explain_safe
+`explain_safe()` automates the main checks. `explain_stability()` reports
+cross-seed rank stability.
 
-info = explain_safe(
-    explainer,
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    ci=0.95,
-    seed=42,
-)
-print(info["warnings"])           # list[str] — e.g. low ess_ratio or low rank_stability
-print(info["rank_stability"])     # float | None — None when the result is already exact
-print(info["unstable_features"])  # list[str] — features whose CI still straddles 0
-```
+## Included capabilities
 
-Use `ASVEnsembleExplainer` to measure sensitivity across multiple candidate DAGs:
+- DAG validation, topological sorting, and order enumeration
+- brute-force, rooted-tree, dense-DAG, and sparse-DAG exact ASV
+- fixed-sample, adaptive, uniform sparse, parallel, and batched approximation
+- deterministic seeds, ESS, standard errors, confidence intervals, and
+  fallback diagnostics
+- Rust and Python APIs
+- CPDAG representation and consistent DAG extension
+- d-convex and strong d-convex graph reduction
+- optional Python helpers for tabular models and DAG sensitivity
 
-```python
-from causasv import CausalDAG, ASVEnsembleExplainer
+Graph reduction operates on a caller-supplied graph. It does not perform
+causal discovery or effect estimation. Its assumptions and clean-room
+implementation record are documented in
+[Strong d-convex hulls](docs/strong_d_convex_hulls.md).
 
-dag1 = CausalDAG.from_edges([("A", "B"), ("B", "C")])
-dag2 = CausalDAG.from_edges([("A", "B"), ("A", "C")])
-ensemble = ASVEnsembleExplainer([dag1, dag2])
-result = ensemble.explain_with_sensitivity(
-    value_fn=lambda feature_names: my_model_score(feature_names),
-    method="auto",
-)
-print(result["mean_values"])     # dict[str, float] — mean ASV across DAGs
-print(result["std_values"])      # dict[str, float] — std across DAGs; 0 = DAG-invariant
-print(result["rank_stability"])  # float — mean pairwise Kendall tau across DAG pairs
-print(result["per_dag_values"])  # list[dict[str, float]] — one dict per DAG
-```
+## Documentation
 
-Inspect and export the DAG:
+- [Correctness and method limits](docs/correctness.md)
+- [Criterion benchmark results](docs/benchmarks.md)
+- [Canonical Python benchmark corpus](docs/benchmark_corpus.md)
+- [ASV and SHAP comparison](docs/comparison_shap.md)
+- [Strong d-convex hull assumptions](docs/strong_d_convex_hulls.md)
+- [quietset instability integration](docs/integrations/quietset_label_instability.md)
+- [Rust API](https://docs.rs/causasv)
 
-```python
-dag.nodes()                     # ["education", "income", "risk_score"]
-dag.edges()                     # [("education", "income"), ("income", "risk_score")]
-dag.to_dot()                    # 'digraph {\n  education -> income;\n  ...\n}'
-dag.to_json()                   # '{"nodes":[...],"edges":[...]}'
-dag.ancestors("risk_score")     # ["education", "income"]
-dag.descendants("education")    # ["income", "risk_score"]
-dag.topological_layers()        # [["education"], ["income"], ["risk_score"]]
+Measurements are evidence for the named version, hardware, graph, and value
+function only. They are not general performance or attribution-quality claims.
 
-# Restore a DAG from JSON
-dag2 = CausalDAG.from_json(dag.to_json())
+## Current limits
 
-# Convert to networkx (networkx must be installed separately)
-import networkx as nx
-G = nx.DiGraph(dag.edges())
-```
-
-Use `TabularExplainer` for a higher-level API with sklearn-compatible models (requires numpy):
-
-```python
-from causasv import CausalDAG, TabularExplainer
-
-dag = CausalDAG.from_edges([("education", "income"), ("income", "risk_score")])
-
-explainer = TabularExplainer.from_model(
-    model=my_classifier,      # any sklearn-compatible model
-    dag=dag,
-    background=X_train,       # reference dataset; absent features filled per `baseline`
-    feature_names=["education", "income", "risk_score"],
-    baseline="mean",          # "mean" | "median" | "sample" | "background_expectation" | callable
-)
-values = explainer.explain_instance(X_test[0], method="auto")
-# values: dict[str, float] mapping feature name → ASV value
-```
-
-`baseline` controls how absent features are filled in: `"mean"`/`"median"` use a single
-summary row; `"sample"` uses one real (seeded, reproducible) background row instead of a
-synthetic average; `"background_expectation"` averages the model's prediction over every
-background row (true marginal expectation — more accurate for correlated features, at the
-cost of `len(background)` model calls per coalition); or pass a callable
-`(background: np.ndarray) -> np.ndarray` for a custom baseline row.
-
-Or build the value function directly with `make_tabular_value_fn` for full control:
-
-```python
-from causasv import make_tabular_value_fn
-
-value_fn = make_tabular_value_fn(model=my_classifier, x=X_test[0],
-                                  background=X_train, feature_names=[...],
-                                  baseline="mean")
-values = ASVExplainer(dag).explain(value_fn, method="auto")
-```
-
-## Exact vs Approximate (advanced — manual method control)
-
-| Method | When to use | API |
-|--------|-------------|-----|
-| `exact` | Small DAGs (n ≤ ~8); enumerates all linear extensions | `explainer.exact(value_fn)` |
-| `exact_tree` | Rooted directed trees; order-ideal DP; rejects bushy shapes past a cost budget (see below) | `explainer.exact_tree(value_fn)` / `explainer.exact_tree_with_config(value_fn, &config)` |
-| `exact_dag` | General DAGs, n ≤ 20; dense order-ideal DP | `explainer.exact_dag(value_fn)` |
-| `exact_dag_sparse` | Sparse DAGs, n ≤ 63; BFS over valid order ideals only | `explainer.exact_dag_sparse(value_fn)` |
-| `uniform_sparse` | Sparse DAGs, n ≤ 63; zero-variance uniform sampling (ESS = n_samples) | `explainer.approximate_uniform_sparse(value_fn, cfg)` |
-| `approx` | Any DAG; IS-weighted sampling | `explainer.approximate(value_fn, SamplingConfig::new(n))` |
-
-`auto` dispatch: n ≤ 8 → `exact`; rooted tree → `exact_tree` if its shape fits `ExactTreeConfig`'s cost budget, else `exact_dag_sparse` if that's feasible (n ≤ 63, order ideals ≤ 250k preflight), else `approx`; n ≤ 20 → `exact_dag_sparse` if order ideals fit half the dense state count else `exact_dag`; 20 < n ≤ 28 → `exact_dag_sparse`; 28 < n ≤ 63 → `exact_dag_sparse` if order ideals ≤ 250k (sparse preflight), else `approx`; n > 63 → `approx`.
-
-**Where the n limits actually apply:**
-- `exact` / `exact_tree` / `exact_dag`: small, method-specific n limits (~8 for brute-force; shape-dependent for `exact_tree`; 20 for dense DP) — these use a dense `2^n`-style representation and are not going to be lifted.
-- `exact_dag_sparse` / `uniform_sparse` / `uniform_sparse_adaptive`: n ≤ 63 — sparse order-ideal DP still packs a coalition into a `u64`, so this ceiling is structural, not a preflight choice.
-- `approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch`: **no node-count limit.** For n > 64, coalitions use a growable bitset internally instead of a `u64` mask (see `src/coalition.rs`); the practical constraints for large DAGs are `n_samples`, the cost of your value function, and the coalition-cache memory budget — not `n`.
-
-`exact_tree`'s cost depends on tree *shape*, not just n: a node with several
-wide/deep sibling subtrees forces a large cartesian product. `exact_tree`
-(and `auto`/`auto_quality`) run an O(n) preflight (`ExactTreeConfig`, default
-budget 50,000 single-node terms / 200,000 total terms) and return
-`ExactTreeBudgetExceeded` — or fall back — rather than materializing it. See
-[docs/correctness.md](docs/correctness.md#exact-method-bounds) for the full
-explanation and [issue #36](https://github.com/kent-tokyo/causasv/issues/36)
-for the motivating case.
-
-`exact_dag_sparse` visits only valid order ideals (sets where every node's parents are also present). For sparse DAGs (chains, trees, few branching points), this can be orders of magnitude fewer states than 2^n. Returns `n_order_ideals`, `state_ratio`, and `memory_mb` diagnostics.
-
-`approximate_uniform_sparse` samples each linear extension with equal probability 1/L(G) using a lazily memoized `dp_ind` table (HashMap), so ESS = n_samples exactly — no IS weight variance. Use `explain_adaptive(method="uniform_sparse")` for adaptive stopping with per-feature stderr and CI.
-
-The IS approximate estimator uses self-normalized importance sampling to correct for the bias introduced by the frontier sampler, so the efficiency axiom (Σφ_i = v(V) − v(∅)) holds exactly even for approximate results. ESS = (Σw)² / Σw²: ESS ≈ n_samples means reliable; ESS ≪ n_samples means high variance.
-
-**Approximation diagnostics checklist** — before trusting an approximate result:
-1. `info["ess_ratio"]` ≥ 0.1 (or 1.0 if using `uniform_sparse`)
-2. Run `explain_stability()` with multiple seeds; `rank_stability` ≥ 0.9
-3. Use `explain_adaptive()` if you need per-feature stderr and CI bounds
-
-See [docs/correctness.md](docs/correctness.md) for axiom proofs, ESS interpretation, and the full checklist.
-
-**Choosing between `auto` and `auto_quality`:**
-- Use `auto` for exploratory work where CI is not required — it dispatches to exact methods when feasible and IS-weighted approximation otherwise.
-- Use `auto_quality` (or `explain_quality()` in Python) when you need confidence intervals or a guaranteed ESS = n_samples on approximate paths. Every code path returns `stderr`; most approximate fallbacks are uniform sparse adaptive (not IS-weighted), so ESS is usually equal to n_samples — except when falling back from a rooted tree whose `exact_tree` shape was rejected (see above), which goes straight to IS-weighted adaptive sampling instead, since uniform sparse adaptive's own memo has no comparable cost budget yet.
-
-See [docs/benchmark_corpus.md](docs/benchmark_corpus.md) for measured runtime and method selection across 8 canonical DAGs.
-See [docs/comparison_shap.md](docs/comparison_shap.md) for a quantitative runtime and attribution comparison against SHAP KernelExplainer.
+- The graph and value function must be supplied by the caller.
+- `exact_tree` can reject a modest-sized but highly branching tree when its
+  estimated combinatorial cost exceeds `ExactTreeConfig`.
+- Dense and sparse exact methods use bitmask representations and therefore
+  have fixed node limits. Importance-sampling methods use a large-coalition
+  backend above 64 nodes.
+- CPDAG validation checks structure and consistent extendability; it does not
+  prove that every directed edge is compelled in a genuine equivalence class.
+- The graph-reduction guarantee depends on distributional and graph
+  assumptions that the library cannot verify.
 
 ## Status
 
-Experimental — v0.8.8. Public API may change before v1.0.
+Experimental — v0.8.8. Public APIs may change before v1.0.
 
-## Algorithm status
+The brute-force implementation remains the correctness oracle for optimized
+methods on small graphs. See [CHANGELOG.md](CHANGELOG.md) for released and
+unreleased changes.
 
-| Method | Implementation | Notes |
-|--------|---------------|-------|
-| `exact` | Enumerates all linear extensions | Reference oracle; practical for n ≤ ~8 |
-| `exact_tree` | Rooted tree validation + order-ideal DP + cost-budget preflight | Efficient for trees; hook-length formula; rejects shapes past `ExactTreeConfig`'s budget instead of hanging |
-| `exact_dag` | Order-ideal DP over 2^n states | General DAGs, n ≤ 20; O(2^n × n) |
-| `exact_dag_sparse` | BFS over valid order ideals + lazy dp_ind | Sparse DAGs, n ≤ 63; memory-bounded |
-| `uniform_sparse` | Lazy dp_ind HashMap uniform sampler | Sparse DAGs n ≤ 63; ESS = n_samples exactly |
-| `approx` | Self-normalized IS over topological orderings | Any DAG; corrects frontier-sampler bias |
-
-The brute-force `exact` implementation is used as the reference oracle in tests for all other methods.
-
-The `exact_tree` DP enumerates valid pre-sets via order ideals and weights each by the hook-length formula, avoiding explicit enumeration of all linear extensions. Caterpillar trees of depth 30 see orders-of-magnitude speedups over brute-force.
-
-The `exact_dag` DP computes two tables over all 2^n bitmasks: `dp_fwd[S]` (orderings of valid order ideals S) and `dp_ind[T]` (linear extensions of any induced subgraph G[T]). The ASV for each node i accumulates `dp_fwd[S] × dp_ind[V\(S∪{i})] × (v(S∪{i}) − v(S))` over all valid transitions. This is the order-ideal DP generalized from trees to arbitrary DAGs.
-
-## Feature matrix
-
-| Feature | Rust | Python | Status |
-|---------|:----:|:------:|--------|
-| Exact ASV (brute-force) | ✓ | ✓ | Stable |
-| Rooted-tree exact DP | ✓ | ✓ | Experimental |
-| General DAG exact DP (n ≤ 20) | ✓ | ✓ | Experimental |
-| Sparse exact DAG DP (n ≤ 63) | ✓ | ✓ | Experimental |
-| Uniform sparse sampling (ESS = n_samples) | ✓ | ✓ | Experimental |
-| Adaptive uniform sparse + CI | ✓ | ✓ | Experimental |
-| Approximate ASV with ESS | ✓ | ✓ | Experimental |
-| Adaptive approximation + CI | ✓ | ✓ | Experimental |
-| Seeded deterministic parallel approx | ✓ | ✓ | Experimental |
-| Batched coalition evaluation | ✓ | ✓ | Experimental |
-| sklearn / NumPy helper (TabularExplainer) | — | ✓ | Experimental |
-| DAG ensemble / sensitivity ASV | — | ✓ | Experimental |
-| DAG structural inspection | — | ✓ | Experimental |
-| Graph export (DOT / JSON / networkx) | — | ✓ | Experimental |
-| CPDAG representation + consistent DAG extension | ✓ | ✓ | Experimental |
-| d-convex / strong d-convex hull (graph reduction) | ✓ | ✓ | Experimental |
-
-## Paper correspondence
-
-*Beyond Shapley: Efficient Computation of Asymmetric Shapley Values*
-
-| Algorithm component | causasv |
-|---------------------|---------|
-| ASV definition | ✓ `exact` (brute-force oracle) |
-| Rooted tree exact algorithm | ✓ `exact_tree` (order-ideal DP + hook-length formula) |
-| General DAG exact DP | ✓ `exact_dag` (order-ideal DP, n ≤ 20) |
-| Importance-sampling approximation for general DAGs | ✓ `approx` |
-| Sparse exact DAG DP | ✓ `exact_dag_sparse` (BFS over order ideals, n ≤ 28) |
-| Causal discovery | — out of scope |
-
-- `exact_tree` implements the order-ideal enumeration + hook-length weighting for rooted directed trees.
-- `exact_dag` implements the two-table order-ideal DP for general DAGs (n ≤ 20).
-- `approx` implements importance-weighted topological ordering sampling for any DAG.
-- `exact` is a brute-force baseline oracle used as a correctness reference in tests.
-
-## Graph reduction (strong d-convex hulls)
-
-Given a DAG or CPDAG and a target variable set, `strong_d_convex_hull` computes
-the *minimal* node set that, under the assumptions established in the
-referenced paper (see below), preserves a causal-effect estimate after
-marginalizing out everything else — useful for cutting a large graph down to a
-small local model before running attribution or effect estimation on it.
-
-```rust
-use causasv::Dag;
-
-fn main() -> Result<(), causasv::CausasvError> {
-    let mut dag = Dag::new();
-    let (a, b, c) = (dag.add_node("A"), dag.add_node("B"), dag.add_node("C"));
-    dag.add_edge(a, b)?;
-    dag.add_edge(b, c)?;
-
-    let hull = dag.strong_d_convex_hull(&[a, c])?; // -> {A, B, C}
-    let reduced = dag.induced_subgraph(&hull.into_iter().collect::<Vec<_>>())?;
-    println!("{} nodes in reduced graph", reduced.node_count());
-    Ok(())
-}
-```
-
-```python
-from causasv import CausalCPDAG
-
-cpdag = CausalCPDAG.from_edges(directed=[("A", "B")], undirected=[("B", "C")])
-hull = cpdag.strong_d_convex_hull(["A", "C"])       # -> ["A", "B", "C"]
-reduced = cpdag.induced_subgraph(hull)
-```
-
-`Cpdag::strong_d_convex_hull` works on a caller-supplied CPDAG (e.g. the output
-of an external structure-learning method — causasv does not perform causal
-discovery) by picking one consistent DAG extension and computing the hull
-there; this is sound because the underlying paper's invariance theorem proves
-the result is identical across every DAG in the CPDAG's Markov equivalence
-class.
-
-This is an independent implementation based on the mathematical definitions
-and algorithms in Deng, Sun, Li & Liu (2026) — full citation, assumptions, and
-scope limits (in particular: proven only for non-adjacent target-variable
-pairs) are in [docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md).
-IDA-based causal effect estimation on the reduced graph is not implemented —
-this only performs the graph reduction itself.
-
-## Performance
-
-Selected results on Apple M-series (arm64, release build), `v(S) = |S|`. See [docs/benchmarks.md](docs/benchmarks.md) for full tables.
-
-| DAG | n | Method | Time |
-|-----|---|--------|------|
-| Chain | 7 | `exact` (brute-force) | 2.7 µs |
-| Balanced tree | 15 | `exact_tree` (DP) | 2.8 ms |
-| Caterpillar | 10 | `exact_tree` (DP) | 170 µs |
-| Chain | 10 | `exact_dag` (dense DP) | **23 µs** |
-| Chain | 16 | `exact_dag` (dense DP, 65k states) | 3.0 ms |
-| Chain | 16 | `exact_dag_sparse` (17 order ideals, via `auto`) | **11 µs** (~280×) |
-| Chain | 24 | `exact_dag_sparse` | 15 µs |
-| Two parallel chains | 20 | `exact_dag` (dense, 1M states) | **55 ms** |
-| Two parallel chains | 20 | `exact_dag_sparse` (121 states) | **91 µs** (~600×) |
-| Diamond | 10 | `approx` seeded (10k samples) | **16 ms** |
-| Diamond | 10 | `approximate_adaptive_batched` (10k max) | 2.4 ms |
-| Chain | 20 | `approx` serial seeded (10k) | **19 ms** |
-| Chain | 20 | `approx` parallel 4t seeded (10k) | 7.4 ms |
-| Balanced tree | 31 | `approx` seeded (10k samples) | 83 ms |
-| Chain | 64 | `approx` serial seeded (2k, u64 backend) | 2.48 ms |
-| Chain | 65 | `approx` serial seeded (2k, large backend) | 4.33 ms |
-| Chain | 128 | `approx` serial seeded (2k, large backend) | 8.55 ms |
-| Chain | 256 | `approx` serial seeded (2k, large backend) | 22.0 ms |
-
-The n=64→65 row pair is the coalition-representation boundary this crate's
-`approx`/`approx_adaptive`/`approx_batched`/`approx_adaptive_batch` paths
-switch across (see "Where the n limits actually apply" above): per-sample
-cost grows smoothly (~75% at the boundary itself in this measurement pass —
-`cargo bench` on this machine is noisy enough between sessions that this
-specific step measured ~37% in an earlier pass for the same unchanged code;
-see [docs/benchmarks.md](docs/benchmarks.md) for the caveat — then roughly
-linearly with n afterward) — there is no discontinuous cliff at n=65 in
-either measurement, just the cost of hashing a `&[u64]` slice instead of a
-bare `u64` on every cache lookup (the coalition buffer itself is reused
-across samples, not reallocated). The
-batched paths' n > 64 coalition cache is shared across every round of a call
-(bounded, admission-capped, same as the non-batched paths), so a chain's
-repeated per-round coalitions are only ever resolved once — but this crate's
-own benchmarks use a cheap synthetic callback, so the boundary step there
-still reflects per-round key bookkeeping rather than callback cost; the
-call-count reduction is a real win specifically for expensive value functions
-(a real Python model). See [docs/benchmarks.md](docs/benchmarks.md) for the
-full large-DAG table (seeded-parallel, adaptive, batched, and
-non-tree/collider shapes) and
-[docs/correctness.md](docs/correctness.md#large-dag-approximate-paths-n--64)
-for the measured comparison.
-
-This balanced tree at n=31 is deliberately benchmarked via `approx`, not
-`exact_tree`: its shape's per-node cost (176,020 — see
-[docs/correctness.md](docs/correctness.md#exact-method-bounds)) exceeds
-`ExactTreeConfig`'s default budget, and a real `exact_tree` run on it takes
-~20-25s. `auto`/`auto_quality` detect this via the O(n) preflight and fall
-back automatically instead of running it.
-
-Run `cargo bench` to reproduce. HTML reports saved to `target/criterion/`.
-
-## Current limitations
-
-- Brute-force exact ASV is exponential in the number of linear extensions; only practical for n ≤ ~8 nodes.
-- `exact_tree` requires a rooted directed tree (single root, all other nodes have in-degree 1) **and** a shape whose per-node combinatorial cost fits `ExactTreeConfig`'s budget (default 50,000 / 200,000 — see [docs/correctness.md](docs/correctness.md#exact-method-bounds)); a small-n but wide/deep tree can still be rejected. For general DAGs with n ≤ 20, use `exact_dag`. For sparse DAGs with n ≤ 28, use `exact_dag_sparse`. For larger DAGs, or any DAG with n > 64 (including rooted trees `exact_tree` rejects on size alone), use `approx` / `approx_adaptive` / `approx_adaptive_batch` — these have no node-count limit; `auto`/`auto_quality` already fall back to them automatically.
-- Python bindings provide `nodes()`, `edges()`, `to_dot()`, and `make_tabular_value_fn`; graph-level DOT export works but Rust-side export is not yet implemented.
-- No built-in causal discovery, model training, or automatic graph construction.
-- `strong_d_convex_hull`'s collapsibility guarantee is proven (by the paper it implements) only for non-adjacent target-variable pairs under Gaussian/multinomial, positive, faithful distributions — see [docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md#scope-and-assumptions). No IDA/effect-estimation API is implemented on top of the reduced graph yet.
-
-## Compared to other tools
-
-`causasv` is not a SHAP replacement or a general-purpose explainability framework.
-It solves one narrow problem:
-
-> Computing Asymmetric Shapley Values over a user-supplied causal DAG.
-
-| Tool | Focus | DAG-aware ordering | Exact ASV | CI / stderr |
-|------|-------|--------------------|-----------|-------------|
-| [SHAP](https://github.com/shap/shap) | Generic feature attribution | No | No | limited |
-| [DoWhy](https://github.com/py-why/dowhy) | Causal effect estimation | Graph-based causal workflow | No | method-dependent |
-| [Captum](https://captum.ai/) | PyTorch model interpretability | No | No | No |
-| [shapiq](https://github.com/mmschlk/shapiq) | Shapley interactions (any order) | No | partial (different target) | benchmarked |
-| [shapr](https://github.com/NorskRegnesentral/shapr) | Conditional / causal Shapley (R + Python) | Yes — broader scope | No | R-first |
-| [shapflex](https://pypi.org/project/shapflex/) | ASV with causal knowledge (Python alpha) | Yes — similar concept | No | No |
-| **causasv** | DAG-aware ASV attribution | **Yes** | **Yes (exact or uniform sparse)** | **Yes (stderr + CI)** |
-
-The main differences from `shapr` and `shapflex`: `causasv` is a Rust-first engine
-that requires the user to supply an explicit causal DAG and a value function.
-It does not perform causal discovery and does not depend on the data distribution.
-`explain_quality()` / `auto_quality()` provide exact results when the DAG is sparse
-enough, with uncertainty quantification always available on approximate paths.
-
-## Scope
-
-- **Does** compute ASV (causal feature attribution) given a DAG and a value function
-- **Does not** do causal discovery, model training, or feature selection
-- **Not** a SHAP replacement — ASV and SHAP answer different questions
-
-## Building Python bindings
+## Build the Python extension
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install maturin pytest
 cd py
-python -m venv .venv && source .venv/bin/activate
-pip install maturin
 maturin develop --features python
-python -m pytest tests/
+python -m pytest
 ```
 
 ## Citation
 
-> Fryer, D., Strümke, I., & Nguyen, H. (2021). *Shapley values for feature selection: The good, the bad, and the axioms.* IEEE Access.
+Project citation metadata is in [CITATION.cff](CITATION.cff). The ASV design is
+inspired by *Beyond Shapley: Efficient Computation of Asymmetric Shapley
+Values*.
 
-For the asymmetric formulation and efficient tree computation, see the paper that inspired this library:
-
-> Beyond Shapley: Efficient Computation of Asymmetric Shapley Values
-
-For the strong d-convex hull graph reduction (see [Graph reduction](#graph-reduction-strong-d-convex-hulls) above):
-
-> Yuxin Deng, Yi Sun, Zhiming Li, and Huaxiong Liu. "Estimate Collapsibility of Causal Effects in Completed Partial DAGs via Strong d-Convex Hulls." arXiv:2606.08941, 2026. DOI: [10.48550/arXiv.2606.08941](https://doi.org/10.48550/arXiv.2606.08941). Licensed CC BY 4.0.
-
-`causasv`'s `d_convex.rs` module is an independent implementation of this
-paper's algorithms — not affiliated with or endorsed by its authors, and no
-code was consulted from the paper's own reference implementation. See
-[docs/strong_d_convex_hulls.md](docs/strong_d_convex_hulls.md) for details.
+The graph-reduction module independently implements mathematical definitions
+from Deng, Sun, Li, and Liu, “Estimate Collapsibility of Causal Effects in
+Completed Partial DAGs via Strong d-Convex Hulls,” arXiv:2606.08941 (2026).
+See the [citation and scope record](docs/strong_d_convex_hulls.md).
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at
+your option.

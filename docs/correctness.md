@@ -1,205 +1,135 @@
-# causasv — Correctness Evidence
+# Correctness and method limits
 
-This document explains how causasv verifies ASV correctness, and how to
-interpret and trust approximate results.
+This document records the correctness oracles, estimator assumptions, method
+limits, and diagnostics used by `causasv`.
 
----
+## Reference oracles
 
-## ASV axioms and property-based tests
+`AsvExplainer::exact` enumerates every topological ordering and is the primary
+oracle on small DAGs. Optimized methods are checked against it on their shared
+domain.
 
-The five core ASV axioms are verified by proptest property-based tests
-in `tests/property_tests.rs` (10 tests, random DAG generation via `arb_dag`).
+Property tests in `tests/property_tests.rs` cover:
 
-| Axiom | What it says | Test |
-|-------|-------------|------|
-| **Efficiency** | Σ φᵢ = v(V) − v(∅) | `prop_efficiency_exact`, `prop_efficiency_exact_dag`, `prop_efficiency_exact_tree`, `prop_efficiency_approx` |
-| **Dummy** | If v(S ∪ {i}) = v(S) for all S, then φᵢ = 0 | `prop_dummy_zero_value_function` |
-| **Additivity** | φᵢ(v + w) = φᵢ(v) + φᵢ(w) | `prop_additivity` |
-| **Relabeling invariance** | Permuting node labels permutes values | `prop_relabeling_invariance` |
-| **Consistency across methods** | exact ≈ exact_dag ≈ exact_dag_sparse ≈ exact_tree | `prop_exact_matches_exact_dag`, `prop_exact_tree_matches_exact`, `prop_exact_dag_sparse_matches_exact_dag` |
+| Property | Expected result |
+| --- | --- |
+| Efficiency | `sum(phi) = v(V) - v(empty)` |
+| Dummy | a feature with zero marginal contribution receives zero |
+| Additivity | `phi(v + w) = phi(v) + phi(w)` |
+| Relabeling | relabeling nodes relabels the result |
+| Method agreement | exact methods agree on supported small DAGs |
 
-Self-normalized IS (`approx`) preserves the **efficiency** axiom exactly because
-numerator and denominator share the same weight sum: Σ(wᵢ Δᵢ) / Σwᵢ.
+Additional tests cover valid topological orderings, deterministic seeds,
+adaptive convergence, batch callback validation, CPDAG extension, and graph
+reduction. For large DAGs, closed-form additive value functions provide an
+oracle when no exact implementation can run.
 
----
+## Approximate estimator
 
-## Why the frontier sampler + self-normalized IS is correct
+The frontier sampler chooses uniformly from the nodes currently available in
+a topological sort. This does not sample complete topological orderings
+uniformly. The `approx` family therefore uses self-normalized importance
+sampling (SNIS):
 
-The frontier sampler draws topological orderings non-uniformly: at each step it
-picks uniformly among currently-available nodes (in-degree-zero in the remaining
-subgraph). This introduces a sampling bias — some orderings are more likely than
-others.
-
-Self-normalized importance sampling (SNIS) corrects for this. Each ordering π is
-drawn with probability q(π). Its IS weight is wᵢ = 1/q(π). The SNIS estimator:
-
+```text
+phi_i ~= sum_pi w(pi) * delta_i(pi) / sum_pi w(pi)
+w(pi) = 1 / q(pi)
 ```
-φᵢ ≈ Σ_π [wᵢ (v(pre(i,π) ∪ {i}) − v(pre(i,π)))] / Σ_π wᵢ
-```
 
-converges to the true uniform-over-orderings average as n_samples → ∞, regardless
-of q (as long as q(π) > 0 for all valid orderings, which the frontier sampler
-guarantees). The efficiency axiom holds exactly for any finite sample, not just
-in expectation.
+Every valid ordering has positive sampling probability, so the estimator
+converges to the uniform-over-orderings ASV average. Efficiency holds for each
+finite sample because each ordering's marginal contributions telescope to
+`v(V) - v(empty)` and share the same normalized weight.
 
-**Log-weight normalization:** All IS paths subtract `max(log_q)` before `exp()`
-to prevent float overflow on extreme frontier distributions. Since SNIS is invariant
-to a common scale factor on all weights, this does not change ASV values.
+Serial, adaptive, and batched paths rescale log weights against a running
+maximum to avoid overflow. The seeded-parallel and unseeded-parallel
+fixed-sample paths still accumulate direct exponentiated weights; use a serial
+or adaptive path for extreme frontier distributions until the parallel
+normalization audit is complete.
 
----
+Uniform sparse sampling uses a memoized count of valid suffix orderings. Its
+samples have equal weight, so `ESS = n_samples`, but its state table remains
+limited to 63 nodes and can be expensive on weakly constrained DAGs.
 
 ## Interpreting approximate results
 
-### Effective Sample Size (ESS)
+- **ESS:** `(sum w)^2 / sum(w^2)`. A low ESS means a small number of orderings
+  dominate the result. `ESS / n_samples >= 0.1` is a screening rule, not a
+  proof of accuracy.
+- **Standard error and confidence interval:** adaptive methods report
+  per-feature standard errors and optional normal-approximation intervals.
+- **Convergence:** `converged=true` means the configured relative-change and
+  ESS conditions were met before `max_samples`; it is not an external accuracy
+  guarantee.
+- **Rank stability:** rerun important analyses across seeds. The Python
+  `explain_stability()` helper reports mean pairwise Kendall tau.
 
-ESS = (Σw)² / Σw² estimates how many independent samples the weighted sample
-corresponds to. ESS ≈ n_samples means weights are nearly uniform (reliable).
-ESS ≪ n_samples means a few orderings dominate (high variance).
-
-**Rule of thumb:** ESS/n_samples ≥ 0.1 before trusting rankings.
-
-### Standard error and confidence intervals
-
-`explain_adaptive()` with `ci=0.95` returns per-feature `stderr`, `ci_low`,
-`ci_high` using a normal approximation:
-
-```
-ci_low  = φᵢ − z₀.₉₇₅ × stderr
-ci_high = φᵢ + z₀.₉₇₅ × stderr
-```
-
-For fixed-sample `approx`, stderr is not computed (use `explain_adaptive()` if
-you need it).
-
-### Approximation diagnostics checklist
-
-Before trusting an approximate result:
-
-1. **Check ESS ratio.** `info["ess_ratio"]` should be ≥ 0.1.
-2. **Run seed stability.** Call `explain_stability(explainer, value_fn, seeds=[...])` and
-   check `rank_stability ≥ 0.9` (Kendall tau). See `examples/stability_diagnostics.py`.
-3. **Increase n_samples** until rankings stop changing. `explain_adaptive()` does this
-   automatically (stops when `max_rel_change < rel_tol`).
-4. **Use CI for borderline features.** If two features have overlapping `ci_low`/`ci_high`,
-   their relative order is not statistically reliable.
-
----
+Use `explain_quality()` for an exact-first Python workflow and
+`explain_safe()` when ESS, rank stability, and intervals should be checked
+together. Overlapping confidence intervals do not establish a reliable
+feature order.
 
 ## Exact method bounds
 
-| Method | n limit | States visited | Notes |
-|--------|---------|----------------|-------|
-| `exact` | ~8 | All L(G) orderings | Exponential in L(G); use only for small graphs |
-| `exact_tree` | shape-dependent | up to `ExactTreeConfig` budget | Only for rooted directed trees — see below |
-| `exact_dag` | 20 | 2ⁿ bitmasks | O(2ⁿ × n) time; ~16 MB for n=20 |
-| `exact_dag_sparse` | 28 | ≤ 2ⁿ order ideals (BFS) | Much faster for sparse DAGs; memory-bounded (default 2 GiB) |
+| Method | Default or hard bound | Work | Notes |
+| --- | --- | --- | --- |
+| `exact` | practical around `n <= 8`; hard bitmask bound 64 | all topological orderings | reference oracle |
+| `exact_tree` | hard bitmask bound 64 plus shape budget | tree order ideals | rooted directed trees only |
+| `exact_dag` | hard bound 20 | all `2^n` masks | dense DP |
+| `exact_dag_sparse` | default `max_nodes=28`; configurable to 63 | valid order ideals | default 2 GiB memory guard |
+| `uniform_sparse` family | hard bound 63 | memoized valid states | approximate, equal weights |
+| `approx` family | no node-count limit | sampled orderings | importance sampling |
 
-`auto()` selects the method automatically and reports what it chose in
-`info["selected_method"]`. If `exact_dag_sparse` hits the memory or overflow
-limit, it falls back to `approx` and sets `info["fallback_from"]`.
+The default `ExactDagConfig` limit and the structural 63-node bitmask limit
+are different. `exact_dag_sparse()` uses the default limit of 28.
+`exact_dag_sparse_with_config()` and automatic dispatch may raise `max_nodes`
+to 63 when a preflight finds at most 250,000 order ideals.
 
-## Large-DAG approximate paths (n > 64)
+`exact_tree` feasibility depends on tree shape. Before enumeration it estimates
+the largest per-node cartesian product and total work. The default
+`ExactTreeConfig` budgets are 50,000 and 200,000 terms. Exceeding either
+returns `ExactTreeBudgetExceeded`; automatic methods then try a sparse exact
+path or an approximate fallback. This prevents a moderately sized but highly
+branching tree from triggering an impractical allocation.
 
-`approx` / `approx_adaptive` / `approx_batched` / `approx_adaptive_batch` have
-no node-count limit. The frontier sampler that drives all of them
-(`sample_one_into`) never represents a coalition as a bitmask at all — it only
-needs `Vec`-sized scratch space — so the only place a coalition needs a
-concrete representation is where a sample's growing prefix is turned into the
-`Vec<NodeId>` handed to a value function, and where that prefix is used as a
-cache key.
+## Automatic dispatch
 
-- For n ≤ 64, that representation is a single `u64` (`1u64 << node.0`).
-- For n > 64, it is a growable word-vector bitset (`LargeCoalition` in
-  `src/coalition.rs`): `ceil(n / 64)` `u64` words, word `w` holding the bits
-  for nodes `[64w, 64w+64)`. Ascending `NodeId` order falls out of the
-  word/bit layout directly (word index, then bit index), so there is no
-  `HashSet`/`HashMap` iteration order to leak into the coalitions a value
-  function sees.
+`auto()` prefers exact methods and uses fixed-sample importance sampling as the
+final fallback. `auto_quality()` uses the same exact paths, then an adaptive
+path that reports standard errors and convergence metadata.
 
-Both representations are fed by the *same* sampler and the *same*
-self-normalized IS math (log-weight rescaling, Kahan summation, ESS/stderr
-formulas) — only the coalition type and its cache differ. Because of that,
-correctness for n > 64 is verified two ways:
+In outline:
 
-1. **Backend parity** (`src/approx_large.rs`, internal `#[cfg(test)]` tests,
-   plus a `proptest` generalization): on the *same* n ≤ 64 DAG, same seed,
-   same sampling order, the n ≤ 64 (`u64`) and n > 64 (`LargeCoalition`)
-   backends must agree — bitwise, for the serial-seeded, adaptive-serial,
-   batched, and adaptive-batched paths alike. This holds even though the
-   batched paths' caching differs between backends (see below) because
-   caching only changes how many times a value is *computed*, never what it
-   computes to, and the underlying value function is deterministic. This is
-   the primary correctness oracle: there is no independent *exact* method for
-   n > 64 to compare against (`exact_dag_sparse` and `uniform_sparse` both
-   still require n ≤ 63 — see below).
-2. **Closed-form additive check** (`tests/large_dag_approx_tests.rs`): for
-   `v(S) = |S|`, the true ASV is exactly 1.0 per node on *any* DAG, so a
-   65/128/256-node chain gives a direct accuracy check without needing an
-   oracle at all.
+1. `n <= 8`: brute-force `exact`.
+2. Rooted tree: `exact_tree` if the shape budget permits it.
+3. `n <= 20`: sparse or dense exact DP, selected by state preflight.
+4. `20 < n <= 63`: sparse exact DP when the state count is manageable;
+   otherwise uniform sparse adaptive or importance-sampling adaptive.
+5. `n > 63`: importance sampling (`approx` or `approx_adaptive`).
 
-**Bounded, not unbounded, caching.** The n ≤ 64 path's `HashMap<u64, f64>`
-cache is implicitly bounded (at most `2^n` distinct keys). A `Box<[u64]>`-keyed
-cache has no such ceiling, and for large, sparsely-branching DAGs, distinct IS
-samples rarely revisit the same prefix past the first couple of steps — an
-unbounded cache would grow roughly `n` entries per sample at a vanishing hit
-rate. `approximate`/`approximate_adaptive` use a `LargeCoalitionCache` capped
-at a fixed entry count *per cache instance* (lookups keep working past the
-cap; new inserts are just skipped, so correctness never depends on the cap).
-"Per instance" matters for the parallel paths: seeded-parallel builds one
-cache per worker thread, so aggregate memory is (roughly) the cap × thread
-count; unseeded-parallel builds one cache per Rayon fold split, which is not
-guaranteed to equal the thread count.
+Results expose `method_used`, `fallback_from`, and `fallback_reason`. Callers
+should record these fields instead of inferring the method from graph size.
 
-The batched paths (`approximate_batched`/`approximate_adaptive_batched`) share
-one `LargeCoalitionCache` across every sampling round of a call, admission-capped
-the same way as the non-batched paths (lookups always work; new inserts are
-declined once the cap is hit; nothing is ever evicted). Each round still does
-its own dedup first (`sort_unstable` + `dedup` on that round's sampled
-prefixes) so a round's repeated coalitions never query the cache twice for the
-same key — only the *first* time a coalition is seen across the whole run
-reaches `value_fn_batch`. On a DAG shape with high structural repetition
-across rounds (a chain has only one valid ordering, so every round revisits
-the *same* n+1 coalitions), this collapses `value_fn_batch` traffic from once
-per round to once *total*: a dedicated test
-(`persistent_cache_collapses_batched_calls_on_chain`, `src/approx_large.rs`)
-drives a 65-node chain through 10 rounds and asserts exactly one call reaches
-the batch value function.
+## Large-DAG approximate paths
 
-That call-count reduction is a real win for an expensive value function (a
-Python model callback measured in milliseconds), but it does **not** show up
-in this crate's own Criterion benchmarks, because those use a cheap synthetic
-callback — there, the dominant per-round cost is the coalition-key
-bookkeeping itself (snapshotting, sorting, and deduping `batch_size × (n+1)`
-`Box<[u64]>` keys every round), which runs regardless of whether the value
-underneath is already cached. A controlled same-process comparison confirms
-both ends of this: with a 50µs/call synthetic cost the persistent cache saves
-under 2% of wall time (bookkeeping dominates), but with a 5ms/call cost — closer
-to a real model-inference callback — it saves roughly (rounds − 1) × 5ms, i.e.
-most of the added cost from repeated invocation. In other words: this change
-helps exactly the case it was designed for (expensive value functions), and is
-neutral on cheap ones. See docs/benchmarks.md for the Criterion numbers this
-implies for `cargo bench`'s synthetic callback specifically.
+Approximate paths use one `u64` coalition through 64 nodes and a growable
+word-vector coalition above 64 nodes. The sampler and SNIS formulas are shared;
+only the coalition representation and cache differ.
 
-See [docs/benchmarks.md](docs/benchmarks.md) for the measured n=64→65
-boundary cost (a smooth increase, not a cliff — driven by hashing/comparing a
-`&[u64]` slice on every cache lookup instead of a bare `u64`, since the
-coalition buffer itself is reused across samples rather than reallocated) and
-the cache-bound stress test in `src/approx_large.rs`.
+The large backend is checked by:
 
-**`exact_tree`'s cost is shape-dependent, not just a function of node count.**
-A node's cost is the product of every ancestor level's side-sibling order-ideal
-count, so a tree with several wide/deep branches can reach billions of
-combinations at a modest `n` (a 61-node tree from a real report — see
-[issue #36](https://github.com/kent-tokyo/causasv/issues/36) — hit ~8×10¹⁰).
-Before calling `enumerate_order_ideals`, `exact_tree_with_config` runs an O(n),
-allocation-free cost estimate (`estimate_tree_exact_cost`) and rejects with
-`ExactTreeBudgetExceeded` if either the largest single node's cost or the total
-summed over the tree exceeds the configured `ExactTreeConfig` budget (default:
-50,000 / 200,000 — calibrated against measured wall-clock time, since
-per-combination cost does not stay O(1) as combinations grow: a 31-node
-balanced binary tree has "only" ~3.6M estimated total terms but takes ~20-25s
-to actually run). `auto()`/`auto_quality()` fall back through
-`exact_dag_sparse` and then `approximate`/`approximate_adaptive` when
-`exact_tree` rejects a shape — never `approximate_uniform_sparse_adaptive` for
-this fallback specifically, since its own internal memo has no comparable
-budget yet and could grow unbounded on the same "dangerous" shape.
+1. running both backends on the same small DAG, seed, and sampled orderings and
+   requiring identical results where the paths overlap; and
+2. checking 65-, 128-, and 256-node additive DAGs against the closed-form ASV
+   value of `1.0` per node.
+
+Large-coalition caches are admission-capped. After the cap is reached, lookups
+continue but new values are not retained, so the cap affects repeated work and
+memory rather than correctness. Parallel fixed-sample execution creates a
+cache per worker or Rayon fold; aggregate memory can therefore exceed a single
+cache's cap.
+
+Batched large-DAG paths share their bounded cache across rounds and still
+deduplicate each in-flight batch. This reduces calls to expensive Python value
+functions without changing the estimator. See [benchmarks.md](benchmarks.md)
+for the measured representation boundary and reproduction commands.
